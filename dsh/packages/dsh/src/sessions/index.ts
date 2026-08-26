@@ -107,7 +107,7 @@ export interface Config {
 }
 
 export const name = 'soulmirror-sessions'
-export const inject = ['soulmirror', 'soulmirrorHome', 'agents', 'agentLoop', 'sessions', 'workspaceRegistry']
+export const inject = ['soulmirror', 'soulmirrorHome', 'agents', 'agentLoop', 'sessions', 'workspaceRegistry', 'sessionPersistence']
 
 const WORKSPACE_TITLE = '灵镜'
 const PRESET_ID = 'soulmirror-chat'
@@ -749,11 +749,41 @@ export function apply(ctx: Context, config: Config = {}): void {
     return handle.agent
   }
 
+  /** Hide the alter session from every sidebar grouping surface (the SoulMirror page is its only home). */
+  const hideAlterFromSidebar = async (sessionId: SessionId): Promise<void> => {
+    try {
+      await ctx.workspaceRegistry.archiveSession(sessionId)
+      log('info', `hidden the alter session ${sessionId} from the sidebar (archived)`)
+    } catch (error: unknown) {
+      log('warn', `hide alter session ${sessionId} from the sidebar failed: ${String(error)}`)
+    }
+  }
+
+  /** Archive every persisted alter session (cwd = DSH_HOME/灵镜) so none lingers in the sidebar's ungrouped list. */
+  const archiveAlterSessions = async (): Promise<void> => {
+    const persistence = ctx.get('sessionPersistence') as { list(): Promise<Array<{ id: SessionId; cwd?: string }>> } | undefined
+    if (persistence === undefined) return
+    const mirrorPath = mirrorDir.replace(/\\/g, '/').replace(/\/+$/, '')
+    try {
+      const headers = await persistence.list()
+      for (const header of headers) {
+        const cwd = header.cwd?.replace(/\\/g, '/').replace(/\/+$/, '')
+        if (cwd !== undefined && cwd === mirrorPath) await hideAlterFromSidebar(header.id)
+      }
+    } catch (error: unknown) {
+      log('warn', `archive alter sessions by cwd failed: ${String(error)}`)
+    }
+  }
 
   /** Serialised: two concurrent callers (startup + a notification) must not create two sessions. */
   const ensureAlter = (): Promise<Agent> => {
     if (ensuring !== undefined) return ensuring
-    const p = ensureAlterInner().finally(() => { ensuring = undefined })
+    const p = ensureAlterInner()
+      .then(async (agent) => {
+        if (alterId !== undefined) await hideAlterFromSidebar(alterId)
+        return agent
+      })
+      .finally(() => { ensuring = undefined })
     ensuring = p
     return p
   }
@@ -1555,9 +1585,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       const mirrorPath = mirrorDir.replace(/\\/g, '/').replace(/\/+$/, '')
       if (ws.title !== WORKSPACE_TITLE || (!path.endsWith('/a2a') && path !== mirrorPath)) continue
       try {
-        for (const sessionId of [...ws.sessionIds]) await ws.detachSession(sessionId)
+        for (const sessionId of [...ws.sessionIds]) {
+          await ws.detachSession(sessionId)
+          await hideAlterFromSidebar(sessionId)
+        }
         await ctx.workspaceRegistry.delete(ws.id)
-        log('info', `migration: removed the legacy workspace "${WORKSPACE_TITLE}" (${ws.path}); its sessions stay, ungrouped`)
+        log('info', `migration: removed the legacy workspace "${WORKSPACE_TITLE}" (${ws.path}); its sessions stay, hidden from the sidebar`)
       } catch (error: unknown) {
         log('warn', `migration: could not remove workspace ${ws.id} (${ws.path}): ${String(error)}`)
       }
@@ -1602,6 +1635,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       if (draftStore.count() > 0) log('info', `${draftStore.count()} pending draft(s) loaded from ${draftStore.path}`)
       await removeLegacyWorkspaces()
+      await archiveAlterSessions()
       unsubscribe = client.subscribe((event) => {
         if (disposed) return
         switch (event.kind) {
