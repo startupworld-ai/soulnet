@@ -1542,17 +1542,18 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   /**
-   * P5 migration: P2–P4 created a dsh workspace "SoulMirror" per identity
-   * directory (`<home>/a2a`) and attached the alter session to it. The page is
-   * the alter's home now, so every such workspace is removed: its sessions are
-   * detached first (they stay, ungrouped), then the workspace record goes.
-   * Matching is by title AND a path ending in `/a2a` so a user's own
-   * workspace named "SoulMirror" is never touched.
+   * P5 migration: earlier versions created a dsh workspace for the alter — P2–P4
+   * under `<home>/a2a`, P5 under `DSH_HOME/灵镜` — and attached the alter session
+   * to it. The page is the alter's home now, so every such workspace is removed:
+   * its sessions are detached first (they stay, ungrouped), then the record goes.
+   * Matching is by title AND a plugin-owned path (`/a2a` or the mirror dir), so a
+   * user's own folder named "灵镜" elsewhere is never touched.
    */
   const removeLegacyWorkspaces = async (): Promise<void> => {
     for (const ws of ctx.workspaceRegistry.list()) {
       const path = ws.path.replace(/\\/g, '/').replace(/\/+$/, '')
-      if (ws.title !== WORKSPACE_TITLE || !path.endsWith('/a2a')) continue
+      const mirrorPath = mirrorDir.replace(/\\/g, '/').replace(/\/+$/, '')
+      if (ws.title !== WORKSPACE_TITLE || (!path.endsWith('/a2a') && path !== mirrorPath)) continue
       try {
         for (const sessionId of [...ws.sessionIds]) await ws.detachSession(sessionId)
         await ctx.workspaceRegistry.delete(ws.id)
