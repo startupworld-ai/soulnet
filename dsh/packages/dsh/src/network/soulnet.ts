@@ -20,7 +20,7 @@
  * The winner and its source are reported in `BackendStatus.binary` / `binarySource`.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, chmodSync, constants, realpathSync } from 'node:fs'
+import { accessSync, appendFileSync, chmodSync, constants, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
@@ -639,7 +639,13 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
     }
     proc.stderr?.setEncoding('utf8')
     proc.stderr?.on('data', (chunk: string) => {
-      for (const line of chunk.split(/\r?\n/)) if (line.trim() !== '') log('info', `[soulnet] ${line.trim()}`)
+      for (const line of chunk.split(/\r?\n/)) {
+        if (line.trim() === '') continue
+        log('info', `[soulnet] ${line.trim()}`)
+        // DEBUG: mirror the peer's stderr (its logf) to a file so the
+        // [recv-debug]/[grp-debug] trace is visible while the GUI is up.
+        try { appendFileSync(join(options.home, 'peer-debug.log'), `${line.trim()}\n`) } catch { /* best effort */ }
+      }
     })
     const ep = new JsonRpcEndpoint(proc.stdout, proc.stdin, {
       timeoutMs: requestTimeoutMs,
