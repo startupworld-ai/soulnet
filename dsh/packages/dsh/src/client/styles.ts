@@ -153,7 +153,7 @@ const CSS = `
 .sm-pendbar b { color: var(--dsw-alias-state-warn-primary); }
 .sm-pendbar .sm-linkbtn { margin-left: auto; }
 .sm-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 20px; display: flex; flex-direction: column; }
-.sm-thread-inner { margin-top: auto; display: flex; flex-direction: column; gap: 4px; }
+.sm-thread-inner { display: flex; flex-direction: column; gap: 4px; }
 .sm-day { align-self: center; margin: 10px 0 6px; padding: 1px 10px; border-radius: 10px; font-size: 11px;
   color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-interactive-bg-hover); }
 .sm-msg { display: flex; flex-direction: column; max-width: 72%; }
