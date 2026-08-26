@@ -67,7 +67,7 @@ export function AgentSettingsSheet({ t, agent, onClose, onSaved, onRemoved }: {
       data-soulmirror-agent-sheet
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div style={{ width: 'min(420px, calc(100% - 48px))', maxHeight: 'calc(100% - 64px)', overflowY: 'auto', borderRadius: 12, border: '1px solid rgba(127,127,127,.3)', background: 'var(--dsw-alias-bg-elevated, var(--dsw-alias-bg-primary, #fff))', boxShadow: '0 12px 40px rgba(0,0,0,.28)', padding: 16, display: 'grid', gap: 10 }}>
+      <div style={{ width: 'min(420px, calc(100% - 48px))', maxHeight: 'calc(100% - 64px)', overflowY: 'auto', borderRadius: 12, border: '1px solid rgba(127,127,127,.3)', background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base))', boxShadow: '0 12px 40px rgba(0,0,0,.28)', padding: 16, display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <strong style={{ flex: 1, fontSize: '1em' }}>{agent === undefined ? t('settings.agents.add') : t('agent.settings.title', { name: agent.name })}</strong>
           <button type="button" className="sm-ghostbtn" onClick={onClose}>{t('inbox.close')}</button>
