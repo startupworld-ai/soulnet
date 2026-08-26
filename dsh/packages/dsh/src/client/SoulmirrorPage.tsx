@@ -157,6 +157,10 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
 
   const goAlter = (): void => { pageStore.select(ALTER_KEY) }
   const goFriend = (fp: string): void => { pageStore.select(fp) }
+  const openContact = (fp: string): void => {
+    pageStore.select(fp)
+    pageStore.setPaneTab('home')
+  }
   const openAlterSession = (sessionId: string): void => {
     openSession(sessionId)
     pageStore.close()
@@ -168,6 +172,7 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
         t={t}
         selected={selected}
         onSelect={(key) => { pageStore.select(key) }}
+        onSelectContact={openContact}
         onAccepted={(fp) => { pageStore.select(fp) }}
         onClose={() => { pageStore.close() }}
       />

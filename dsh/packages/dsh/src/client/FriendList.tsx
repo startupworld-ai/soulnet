@@ -16,7 +16,7 @@ import { api, networkStore, type ApiGroup, type ApiGroupProfile } from './api.ts
 import { GroupCreateDialog } from './GroupCreateDialog.tsx'
 import type { Translate } from './translate.ts'
 import { formatAge, previewOf, type InboxFriend } from './inbox-state.ts'
-import { agentKey, ALTER_KEY, groupKey, type Col2Tab } from './page-state.ts'
+import { agentKey, ALTER_KEY, filterFriends, groupKey, type Col2Tab } from './page-state.ts'
 import { AgentSettingsSheet } from './AgentSettingsSheet.tsx'
 import { pageStore } from './page-store.ts'
 import { SoulMirrorIcon } from './SidebarEntry.tsx'
@@ -26,11 +26,16 @@ export interface FriendListProps {
   /** `ALTER_KEY` or the selected friend's fingerprint. */
   selected: string
   onSelect: (key: string) => void
+  /** A contact row was clicked in the address book: select + open the friend's home page. */
+  onSelectContact: (fp: string) => void
   /** A pending request was accepted: the new friend's fp. */
   onAccepted?: (fp: string) => void
   /** Close the page (back to dsh). */
   onClose: () => void
 }
+
+/** How many seat agents are shown before the rest collapses behind an expander. */
+const AGENT_COLLAPSE = 3
 
 function useCopy(): [copied: boolean, copy: (text: string) => void] {
   const [copied, setCopied] = useState(false)
@@ -142,7 +147,34 @@ function ChatRow({ row, typing, apps, selected, t, onSelect }: {
   )
 }
 
-export function FriendList({ t, selected, onSelect, onAccepted, onClose }: FriendListProps) {
+/** One row of the address book (通讯录): avatar + name + presence, alphabetical, no message preview. */
+function ContactRow({ f, selected, t, onSelect }: { f: InboxFriend; selected: boolean; t: Translate; onSelect: () => void }) {
+  return (
+    <li>
+      <button
+        type="button"
+        className={`sm-row${selected ? ' sm-selected' : ''}`}
+        onClick={onSelect}
+        aria-pressed={selected}
+        data-soulmirror-page-contact={f.fp}
+        data-soulmirror-selected={selected ? 'true' : undefined}
+      >
+        <span className="sm-avawrap">
+          <span className="sm-avatar" aria-hidden>{f.name.slice(0, 1)}</span>
+          <span className={`sm-presence${f.online === true ? ' sm-online' : ''}`} title={f.online === true ? t('inbox.online') : t('inbox.offline')} />
+        </span>
+        <span className="sm-row-body">
+          <span className="sm-row-title">
+            <span className="sm-row-name">{f.name}</span>
+            {f.tier !== undefined && f.tier !== 'draft' ? <TierPill tier={f.tier} t={t} /> : null}
+          </span>
+        </span>
+      </button>
+    </li>
+  )
+}
+
+export function FriendList({ t, selected, onSelect, onSelectContact, onAccepted, onClose }: FriendListProps) {
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const { inbox } = net
@@ -160,6 +192,7 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
   /** The WeChat-style "+" menu and the small dialog it opens. */
   const [plusOpen, setPlusOpen] = useState(false)
   const [agentSheetOpen, setAgentSheetOpen] = useState(false)
+  const [agentsExpanded, setAgentsExpanded] = useState(false)
   const [dialog, setDialog] = useState<'add' | 'join' | undefined>(undefined)
 
   // Typing a query warms every archive (sequentially — never floods the
@@ -202,6 +235,12 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
   // Split the combined rows by the second-column tab.
   const friendRows = rows.filter((r): r is Extract<ChatRowData, { kind: 'friend' }> => r.kind === 'friend')
   const groupRows = rows.filter((r): r is Extract<ChatRowData, { kind: 'group' }> => r.kind === 'group')
+  // Address book (通讯录): all friends, alphabetical, filtered by the search query.
+  const contactRows = filterFriends(inbox.friends, query).sort((a, b) => a.name.localeCompare(b.name))
+  // Seat agents collapse to AGENT_COLLAPSE until the owner expands them.
+  const agents = net.state?.agents ?? []
+  const agentsExpandedNow = agentsExpanded || agents.length <= AGENT_COLLAPSE
+  const visibleAgents = agentsExpandedNow ? agents : agents.slice(0, AGENT_COLLAPSE)
   // Search hits: names first, then message content out of the cached archives
   // (all threads are prefetched while the page is open).
   const nameHits: ChatRowData[] = q === ''
@@ -271,7 +310,7 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
       const { gid } = await api.groupApply(joinUri.trim())
       setJoinUri('')
       setDialog(undefined)
-      if (gid !== '') { pageStore.setCol2Tab('groups'); onSelect(groupKey(gid)) }
+      if (gid !== '') { pageStore.setCol2Tab('messages'); onSelect(groupKey(gid)) }
       return t('group.join.applied')
     })
   }
@@ -411,7 +450,7 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
               <>
                 <div className="sm-plus-backdrop" role="presentation" onClick={() => { setPlusOpen(false) }} />
                 <div className="sm-plusmenu" role="menu" data-soulmirror-plus-menu>
-                  <button type="button" role="menuitem" onClick={() => { setPlusOpen(false); pageStore.setCol2Tab('groups'); setCreateOpen(true) }} data-soulmirror-plus-new-group>
+                  <button type="button" role="menuitem" onClick={() => { setPlusOpen(false); pageStore.setCol2Tab('messages'); setCreateOpen(true) }} data-soulmirror-plus-new-group>
                     {t('group.create')}
                   </button>
                   <button type="button" role="menuitem" onClick={() => { setPlusOpen(false); setDialog('add') }} data-soulmirror-plus-add-friend>
@@ -427,7 +466,7 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
         </span>
       </div>
       <div className="sm-col2-tabs" data-soulmirror-col2-tabs>
-        {(['contacts', 'agents', 'groups'] as const).map(tab => (
+        {(['messages', 'contacts'] as const).map(tab => (
           <button
             key={tab}
             type="button"
@@ -443,8 +482,8 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
       <div className="sm-list-body">
         {protocolOpen ? <ProtocolEditor t={t} /> : null}
 
-        {/* ——— 通讯录: My alter pinned + pending requests + friends ——— */}
-        {col2Tab === 'contacts' && (
+        {/* ——— 消息: My alter + 智能体 + 群聊 + 好友会话 ——— */}
+        {col2Tab === 'messages' && (
           <>
             <div className="sm-section">{t('col2.contacts.section')}</div>
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -470,6 +509,114 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
                 </button>
               </li>
             </ul>
+
+            <div className="sm-section" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ flex: 1 }}>{t('agents.section')}</span>
+              <button type="button" className="sm-linkbtn" onClick={() => { setAgentSheetOpen(true) }} data-soulmirror-agents-add>＋ {t('settings.agents.add')}</button>
+            </div>
+            {agents.length === 0
+              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{t('col2.agents.empty')}</p>
+              : (
+                <>
+                  <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                    {visibleAgents.map((a) => {
+                      const key = agentKey(a.name)
+                      const agentSelected = selected === key
+                      return (
+                        <li key={a.name}>
+                          <button
+                            type="button"
+                            className={`sm-row${agentSelected ? ' sm-selected' : ''}`}
+                            onClick={() => { onSelect(key) }}
+                            aria-pressed={agentSelected}
+                            data-soulmirror-page-agent={a.name}
+                            data-soulmirror-selected={agentSelected ? 'true' : undefined}
+                          >
+                            <span className="sm-avawrap">
+                              <span className="sm-avatar" aria-hidden>🤖</span>
+                            </span>
+                            <span className="sm-row-body">
+                              <span className="sm-row-title">
+                                <span className="sm-row-name">{a.name} <span className={`sm-livedot${a.status === 'running' ? ' sm-busy' : ''}`} aria-hidden /></span>
+                              </span>
+                              <span className="sm-row-preview">{a.status === 'running' ? t('settings.agents.status.running') : a.cwd ?? t('settings.agents.status.idle')}</span>
+                            </span>
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                  {agents.length > AGENT_COLLAPSE
+                    ? (
+                      <button type="button" className="sm-linkbtn" style={{ margin: '2px 10px 6px' }} onClick={() => { setAgentsExpanded(v => !v) }} data-soulmirror-agents-expand>
+                        {agentsExpandedNow ? t('agents.collapse') : t('agents.expand', { n: agents.length - AGENT_COLLAPSE })}
+                      </button>
+                    )
+                    : null}
+                </>
+              )}
+            {agentSheetOpen
+              ? <AgentSettingsSheet t={t} onClose={() => { setAgentSheetOpen(false) }} onSaved={(name) => { onSelect(agentKey(name)) }} />
+              : null}
+
+            <div className="sm-section">{t('groups.section')}</div>
+            {groupRows.length === 0
+              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{q !== '' ? t('page.empty.noMatch', { query }) : t('col2.groups.empty')}</p>
+              : (
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-groups>
+                  {groupRows.map(r => (
+                    <ChatRow
+                      key={r.rowKey}
+                      row={r}
+                      typing={false}
+                      apps={inbox.groupApps[r.g.gid] ?? 0}
+                      selected={selected === r.rowKey}
+                      t={t}
+                      onSelect={() => { onSelect(r.rowKey) }}
+                    />
+                  ))}
+                </ul>
+              )}
+            {createOpen
+              ? (
+                <GroupCreateDialog
+                  t={t}
+                  friends={inbox.friends}
+                  busy={busy !== undefined}
+                  onCreate={createGroup}
+                  onClose={() => { setCreateOpen(false) }}
+                />
+              )
+              : null}
+
+            <div className="sm-section">{t('messages.friends')}</div>
+            {friendRows.length === 0
+              ? (
+                <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>
+                  {identity === null ? t('page.empty.noFriends.noIdentity') : q !== '' ? t('page.empty.noMatch', { query }) : t('chats.empty')}
+                </p>
+              )
+              : (
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-friends data-soulmirror-page-chats>
+                  {friendRows.map(r => (
+                    <ChatRow
+                      key={r.rowKey}
+                      row={r}
+                      typing={inbox.typing[r.f.fp] === true || r.f.typing === true}
+                      apps={0}
+                      selected={selected === r.rowKey}
+                      t={t}
+                      onSelect={() => { onSelect(r.rowKey) }}
+                    />
+                  ))}
+                </ul>
+              )}
+          </>
+        )}
+
+        {/* ——— 通讯录: 待处理 + 全部好友地址簿 ——— */}
+        {col2Tab === 'contacts' && (
+          <>
             {inbox.pending.length > 0
               ? (
                 <>
@@ -512,108 +659,26 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
                 </>
               )
               : null}
-            <div className="sm-section">{t('chats.section')}</div>
-            {friendRows.length === 0
+            <div className="sm-section">{t('inbox.friends')}</div>
+            {contactRows.length === 0
               ? (
                 <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>
-                  {identity === null ? t('page.empty.noFriends.noIdentity') : q !== '' ? t('page.empty.noMatch', { query }) : t('chats.empty')}
+                  {identity === null ? t('page.empty.noFriends.noIdentity') : q !== '' ? t('page.empty.noMatch', { query }) : t('inbox.empty')}
                 </p>
               )
               : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-friends data-soulmirror-page-chats>
-                  {friendRows.map(r => (
-                    <ChatRow
-                      key={r.rowKey}
-                      row={r}
-                      typing={inbox.typing[r.f.fp] === true || r.f.typing === true}
-                      apps={0}
-                      selected={selected === r.rowKey}
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-contacts>
+                  {contactRows.map(f => (
+                    <ContactRow
+                      key={f.fp}
+                      f={f}
+                      selected={selected === f.fp}
                       t={t}
-                      onSelect={() => { onSelect(r.rowKey) }}
+                      onSelect={() => { onSelectContact(f.fp) }}
                     />
                   ))}
                 </ul>
               )}
-          </>
-        )}
-
-        {/* ——— 智能体: seat agents ——— */}
-        {col2Tab === 'agents' && (
-          <>
-            <div className="sm-section" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ flex: 1 }}>{t('agents.section')}</span>
-              <button type="button" className="sm-linkbtn" onClick={() => { setAgentSheetOpen(true) }} data-soulmirror-agents-add>＋ {t('settings.agents.add')}</button>
-            </div>
-            {(net.state?.agents?.length ?? 0) === 0
-              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{t('col2.agents.empty')}</p>
-              : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-                  {(net.state?.agents ?? []).map((a) => {
-                    const key = agentKey(a.name)
-                    const agentSelected = selected === key
-                    return (
-                      <li key={a.name}>
-                        <button
-                          type="button"
-                          className={`sm-row${agentSelected ? ' sm-selected' : ''}`}
-                          onClick={() => { onSelect(key) }}
-                          aria-pressed={agentSelected}
-                          data-soulmirror-page-agent={a.name}
-                          data-soulmirror-selected={agentSelected ? 'true' : undefined}
-                        >
-                          <span className="sm-avawrap">
-                            <span className="sm-avatar" aria-hidden>🤖</span>
-                          </span>
-                          <span className="sm-row-body">
-                            <span className="sm-row-title">
-                              <span className="sm-row-name">{a.name} <span className={`sm-livedot${a.status === 'running' ? ' sm-busy' : ''}`} aria-hidden /></span>
-                            </span>
-                            <span className="sm-row-preview">{a.status === 'running' ? t('settings.agents.status.running') : a.cwd ?? t('settings.agents.status.idle')}</span>
-                          </span>
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            {agentSheetOpen
-              ? <AgentSettingsSheet t={t} onClose={() => { setAgentSheetOpen(false) }} onSaved={(name) => { onSelect(agentKey(name)) }} />
-              : null}
-          </>
-        )}
-
-        {/* ——— 群聊: groups ——— */}
-        {col2Tab === 'groups' && (
-          <>
-            <div className="sm-section">{t('groups.section')}</div>
-            {groupRows.length === 0
-              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{q !== '' ? t('page.empty.noMatch', { query }) : t('col2.groups.empty')}</p>
-              : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-groups>
-                  {groupRows.map(r => (
-                    <ChatRow
-                      key={r.rowKey}
-                      row={r}
-                      typing={false}
-                      apps={inbox.groupApps[r.g.gid] ?? 0}
-                      selected={selected === r.rowKey}
-                      t={t}
-                      onSelect={() => { onSelect(r.rowKey) }}
-                    />
-                  ))}
-                </ul>
-              )}
-            {createOpen
-              ? (
-                <GroupCreateDialog
-                  t={t}
-                  friends={inbox.friends}
-                  busy={busy !== undefined}
-                  onCreate={createGroup}
-                  onClose={() => { setCreateOpen(false) }}
-                />
-              )
-              : null}
           </>
         )}
       </div>

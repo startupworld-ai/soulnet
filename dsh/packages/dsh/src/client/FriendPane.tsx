@@ -203,7 +203,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
             <button type="button" className="sm-ghostbtn" onClick={() => { setCardOpen(v => !v) }}><IconUserOutline16 size={14} /> {t('page.header.card')}</button>
             <button type="button" className="sm-ghostbtn" onClick={() => { pageStore.setPaneTab('chat'); setCardOpen(true) }}><IconCopyOutline16 size={14} /> {t('page.header.card.copy')}</button>
             <button type="button" className="sm-ghostbtn" aria-expanded={settingsOpen} onClick={() => { setSettingsOpen(v => !v) }}>{t('friend.actbar.settings')}</button>
-            <Button variant="primary" size="sm" onClick={onGoAlter}>{t('friend.actbar.goAlter')}</Button>
+            <Button variant="primary" size="sm" onClick={onGoAlter}>{t('friend.home.sendMessage')}</Button>
           </div>
         </div>
         {settingsOpen

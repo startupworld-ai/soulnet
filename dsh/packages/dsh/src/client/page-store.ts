@@ -58,11 +58,11 @@ const PAGE_STORAGE_KEY = 'soulmirror.page'
 const PERSIST_MS = 250
 
 const PANE_TABS: readonly PaneTab[] = ['chat', 'announce', 'home', 'members', 'admin', 'info', 'settings']
-const COL2_TABS: readonly Col2Tab[] = ['contacts', 'agents', 'groups']
+const COL2_TABS: readonly Col2Tab[] = ['messages', 'contacts']
 
 /** The navigation state we persist, guarded for non-browser envs (unit tests run under node). */
 function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab' | 'paneTab'> {
-  const fallback = { open: false, selected: undefined, col2Tab: 'contacts' as Col2Tab, paneTab: DEFAULT_PANE_TAB as PaneTab }
+  const fallback = { open: false, selected: undefined, col2Tab: 'messages' as Col2Tab, paneTab: DEFAULT_PANE_TAB as PaneTab }
   try {
     if (typeof localStorage === 'undefined') return fallback
     const raw = localStorage.getItem(PAGE_STORAGE_KEY)
@@ -71,7 +71,7 @@ function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab'
     return {
       open: p.open === true,
       selected: typeof p.selected === 'string' ? p.selected : undefined,
-      col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'contacts',
+      col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'messages',
       paneTab: PANE_TABS.includes(p.paneTab as PaneTab) ? p.paneTab as PaneTab : DEFAULT_PANE_TAB,
     }
   } catch {
@@ -238,7 +238,7 @@ export class PageStore {
     this.prime(selection)
   }
 
-  /** Switch the second-column section (contacts / agents / groups). */
+  /** Switch the second-column section (messages / contacts). */
   setCol2Tab = (tab: Col2Tab): void => { if (tab !== this.snapshot.col2Tab) this.set({ col2Tab: tab }) }
 
   /** Switch the third-column panel (chat / announce / home / members / admin / info). */
