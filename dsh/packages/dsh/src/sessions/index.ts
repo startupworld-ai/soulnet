@@ -731,6 +731,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         alterId = undefined
       }
     }
+    await mkdir(mirrorDir, { recursive: true })
     const sessionId = `session-${crypto.randomUUID()}` as SessionId
     const composition = await composeSetup(sessionId)
     const agentOptions = defaultAgentOptions()
@@ -748,28 +749,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     return handle.agent
   }
 
-  /** Create/reuse the plugin's dsh workspace and pin the alter session into it, so it never lands in the ungrouped list. */
-  const attachToWorkspace = async (sessionId: SessionId): Promise<void> => {
-    const registry = ctx.get('workspaceRegistry') as { create(path: string, title?: string): Promise<{ attachSession(id: SessionId): Promise<void> }> } | undefined
-    if (registry === undefined) return
-    try {
-      await mkdir(mirrorDir, { recursive: true })
-      const ws = await registry.create(mirrorDir, WORKSPACE_TITLE)
-      await ws.attachSession(sessionId)
-      log('info', 'attached alter session ' + sessionId + ' to dsh workspace "' + WORKSPACE_TITLE + '" (' + a2aDir + ')')
-    } catch (error: unknown) {
-      log('warn', 'attach alter session to dsh workspace failed: ' + String(error))
-    }
-  }
+
   /** Serialised: two concurrent callers (startup + a notification) must not create two sessions. */
   const ensureAlter = (): Promise<Agent> => {
     if (ensuring !== undefined) return ensuring
-    const p = ensureAlterInner()
-      .then((agent) => {
-        if (alterId !== undefined) void attachToWorkspace(alterId)
-        return agent
-      })
-      .finally(() => { ensuring = undefined })
+    const p = ensureAlterInner().finally(() => { ensuring = undefined })
     ensuring = p
     return p
   }

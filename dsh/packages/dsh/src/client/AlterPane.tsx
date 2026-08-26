@@ -9,7 +9,7 @@
  * turn). The native dsh session holds the same log ("Open in dsh").
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Button, IconRightUpOutline14, IconSendOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconSendOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import { networkStore, type ApiChatItem } from './api.ts'
@@ -238,16 +238,6 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
           <div className="sm-home-line"><span className="sm-home-line-key">{t('alter.home.defaultTier')}</span><span className="sm-home-line-val">{t(`tier.short.${net.state?.alter?.defaultTier ?? 'draft'}`)}</span></div>
           <div className="sm-home-line"><span className="sm-home-line-key">{t('alter.home.perHour')}</span><span className="sm-home-line-val">{net.state?.alter?.autoReplyPerHour ?? 20}</span></div>
         </div>
-        {alter.sessionId !== undefined
-          ? (
-            <div className="sm-home-card">
-              <div className="sm-home-title"><span>{t('alter.home.actions')}</span></div>
-              <button type="button" className="sm-ghostbtn" onClick={() => { onOpenSession(alter.sessionId!) }} data-soulmirror-alter-open-dsh>
-                <IconRightUpOutline14 size={14} /> {t('alter.openDsh')}
-              </button>
-            </div>
-          )
-          : null}
       </div>
     </div>
   )
@@ -276,17 +266,6 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
             <span className={`sm-livedot${running ? ' sm-busy' : ''}`} aria-hidden />
             {alter.sessionId === undefined ? t('alter.status.noSession') : running ? t('alter.status.running') : t('alter.status.idle')}
           </div>
-        </div>
-        <div className="sm-chat-head-actions">
-          {alter.sessionId !== undefined
-            ? (
-              <Tooltip label={t('alter.openDsh.hint')} side="bottom">
-                <button type="button" className="sm-ghostbtn" onClick={() => { onOpenSession(alter.sessionId!) }} data-soulmirror-alter-open-dsh>
-                  <IconRightUpOutline14 size={14} /> {t('alter.openDsh')}
-                </button>
-              </Tooltip>
-            )
-            : null}
         </div>
       </header>
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />

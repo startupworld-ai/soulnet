@@ -231,7 +231,6 @@ export function SoulmirrorSettingsSection({ openSession, scope, t }: SoulmirrorS
         <p style={small}>{t('settings.alter.intro')}</p>
         <div style={rowStyle}>
           <button type="button" onClick={() => { pageStore.open('alter') }} data-soulmirror-settings-open-page>{t('settings.alter.openPage')}</button>
-          {state?.alter?.sessionId != null ? <button type="button" onClick={() => { openSession(state.alter!.sessionId!) }} data-soulmirror-settings-open-alter-session>{t('settings.alter.openSession')}</button> : null}
           {state?.alter?.legacyFriendSessions !== undefined && Object.keys(state.alter.legacyFriendSessions).length > 0
             ? <span style={small}>{t('settings.alter.legacy', { n: Object.keys(state.alter.legacyFriendSessions).length })}</span>
             : null}
