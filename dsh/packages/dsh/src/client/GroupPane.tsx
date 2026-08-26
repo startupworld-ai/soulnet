@@ -249,7 +249,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
             {role === 'owner' && !editOpen
               ? <button type="button" className="sm-ghostbtn" onClick={openEditor} data-soulmirror-group-profile-edit>{t('group.home.edit')}</button>
               : null}
-            {profile?.public === true && relay !== undefined
+            {relay !== undefined
               ? (
                 <button type="button" className="sm-ghostbtn" onClick={copyUri} data-soulmirror-group-uri-copy>
                   {copied ? <IconCheckOutline14 size={14} /> : <IconCopyOutline16 size={14} />} {copied ? t('group.home.uri.copied') : t('group.home.uri.copy')}
@@ -706,7 +706,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
         <div className="sm-home-card">
           <div className="sm-home-title">
             <span>{t('group.home.profile')}</span>
-            {profile?.public === true && relay !== undefined
+            {relay !== undefined
               ? (
                 <button type="button" className="sm-ghostbtn" onClick={copyUri} data-soulmirror-group-uri-copy>
                   {copied ? <IconCheckOutline14 size={14} /> : <IconCopyOutline16 size={14} />} {copied ? t('group.home.uri.copied') : t('group.home.uri.copy')}

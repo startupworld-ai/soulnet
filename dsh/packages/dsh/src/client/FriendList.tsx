@@ -603,6 +603,17 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
                   ))}
                 </ul>
               )}
+            {createOpen
+              ? (
+                <GroupCreateDialog
+                  t={t}
+                  friends={inbox.friends}
+                  busy={busy !== undefined}
+                  onCreate={createGroup}
+                  onClose={() => { setCreateOpen(false) }}
+                />
+              )
+              : null}
           </>
         )}
       </div>
