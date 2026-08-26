@@ -457,7 +457,7 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
                   ? (
                     <div style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: 6, zIndex: 20, minWidth: 180, maxHeight: 220, overflowY: 'auto', borderRadius: 8, border: '1px solid rgba(127,127,127,.35)', background: 'var(--dsw-alias-bg-elevated, var(--dsw-alias-bg-primary, #fff))', boxShadow: '0 6px 24px rgba(0,0,0,.18)', padding: 4, display: 'grid' }} data-soulmirror-mention-pop>
                       {mentionMatches.map(p => (
-                        <button key={`${p.name}|${p.owner ?? ''}`} type="button" className="sm-linkbtn" style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6 }} onMouseDown={(e) => { e.preventDefault(); pickMention(p.name) }}>
+                        <button key={`${p.name}|${p.owner ?? ''}`} type="button" className="sm-linkbtn" style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6 }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); pickMention(p.name) }}>
                           {p.owner !== undefined ? <span aria-hidden style={{ marginRight: 4 }}>🤖</span> : null}
                           @{p.name}
                           {p.owner !== undefined ? <span className="sm-statepill" style={{ marginLeft: 6 }}>{p.owner}</span> : null}

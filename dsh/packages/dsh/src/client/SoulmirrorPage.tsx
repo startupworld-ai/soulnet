@@ -131,6 +131,10 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
       if (target === null) return
       if (rootEl.contains(target)) return
       if ((target as Element | null)?.closest?.('[data-soulmirror-footer]') != null) return
+      // The @-mention box removes itself on mousedown (before this document
+      // listener runs), so its target is already detached from root — but it is
+      // still page content and must never close the page.
+      if ((target as Element | null)?.closest?.('[data-soulmirror-mention-pop]') != null) return
       pageStore.close()
     }
     document.addEventListener('mousedown', onDown)
