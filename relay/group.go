@@ -7,6 +7,7 @@ package relay
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -172,6 +173,7 @@ func (s *Server) groupPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.emit(Event{Kind: EventGroupPublished, FP: g.OwnerFp(), Data: map[string]any{"gid": g.GroupID, "version": g.Version}})
+	log.Printf("[relay-debug] groupPublish gid=%s owner=%s version=%d members=%d", a2a.ShortFp(g.GroupID), a2a.ShortFp(g.OwnerFp()), g.Version, len(g.Members))
 	WriteJSON(w, 200, map[string]any{"ok": true, "version": g.Version})
 }
 
@@ -194,9 +196,11 @@ func (s *Server) groupFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if g.Member(fp) == nil {
+		log.Printf("[relay-debug] groupFetch gid=%s by=%s DENIED (not a member)", a2a.ShortFp(gid), a2a.ShortFp(fp))
 		WriteError(w, 403, "not a member of this group")
 		return
 	}
+	log.Printf("[relay-debug] groupFetch gid=%s by=%s OK version=%d", a2a.ShortFp(gid), a2a.ShortFp(fp), g.Version)
 	WriteJSON(w, 200, map[string]any{"roster": g})
 }
 
@@ -243,13 +247,16 @@ func (s *Server) groupMail(w http.ResponseWriter, r *http.Request) {
 		copyEnv := env
 		copyEnv.To = fp
 		if err := s.deliver(&copyEnv); err != nil {
+			log.Printf("[relay-debug] groupMail gid=%s sender=%s member=%s FAIL err=%v", a2a.ShortFp(env.GID), a2a.ShortFp(senderFp), a2a.ShortFp(fp), err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
+		log.Printf("[relay-debug] groupMail gid=%s sender=%s member=%s OK", a2a.ShortFp(env.GID), a2a.ShortFp(senderFp), a2a.ShortFp(fp))
 		delivered++
 	}
+	log.Printf("[relay-debug] groupMail gid=%s sender=%s members=%d delivered=%d", a2a.ShortFp(env.GID), a2a.ShortFp(senderFp), len(g.MemberFps()), delivered)
 	if delivered == 0 && firstErr != nil {
 		WriteError(w, 500, firstErr.Error())
 		return
