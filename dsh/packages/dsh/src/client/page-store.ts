@@ -58,7 +58,7 @@ const PAGE_STORAGE_KEY = 'soulmirror.page'
 const PERSIST_MS = 250
 
 const PANE_TABS: readonly PaneTab[] = ['chat', 'announce', 'home', 'members', 'admin', 'info', 'memory', 'settings']
-const COL2_TABS: readonly Col2Tab[] = ['messages', 'contacts']
+const COL2_TABS: readonly Col2Tab[] = ['contacts', 'agents', 'groups']
 
 /**
  * A persisted `paneTab` only makes sense for the selection it was saved under:
@@ -75,7 +75,7 @@ function clampPaneTab(tab: unknown, selected: string | undefined): PaneTab {
 
 /** The navigation state we persist, guarded for non-browser envs (unit tests run under node). */
 function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab' | 'paneTab'> {
-  const fallback = { open: false, selected: undefined, col2Tab: 'messages' as Col2Tab, paneTab: DEFAULT_PANE_TAB as PaneTab }
+  const fallback = { open: false, selected: undefined, col2Tab: 'contacts' as Col2Tab, paneTab: DEFAULT_PANE_TAB as PaneTab }
   try {
     if (typeof localStorage === 'undefined') return fallback
     const raw = localStorage.getItem(PAGE_STORAGE_KEY)
@@ -85,7 +85,7 @@ function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab'
     return {
       open: p.open === true,
       selected,
-      col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'messages',
+      col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'contacts',
       paneTab: clampPaneTab(p.paneTab, selected),
     }
   } catch {

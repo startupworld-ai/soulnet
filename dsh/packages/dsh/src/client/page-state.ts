@@ -259,8 +259,8 @@ export function resolveSelection(friends: readonly Pick<InboxFriend, 'fp'>[], gr
 
 // ——— page tabs (col2 = second column, pane = third column body) ———
 
-/** Which section the second column (the list) shows: the message list, or the address book. */
-export type Col2Tab = 'messages' | 'contacts'
+/** Which section the second column (the list) shows: the address book, the seat agents, or the groups. */
+export type Col2Tab = 'contacts' | 'agents' | 'groups'
 
 /** Which panel of the third column (content area) is active. */
 export type PaneTab = 'chat' | 'announce' | 'home' | 'members' | 'admin' | 'info' | 'settings' | 'memory'
@@ -284,7 +284,7 @@ export function kindOf(selected: string | undefined): SelectionKind {
 export function tabsFor(kind: SelectionKind, canAdmin: boolean): PaneTab[] {
   switch (kind) {
     case 'alter': return ['chat', 'home', 'memory', 'settings']
-    case 'friend': return ['chat', 'home']
+    case 'friend': return ['chat', 'home', 'memory']
     case 'group': return canAdmin ? ['chat', 'announce', 'home', 'memory', 'members', 'admin'] : ['chat', 'announce', 'home', 'memory', 'members']
     case 'agent': return ['chat', 'memory', 'info']
   }

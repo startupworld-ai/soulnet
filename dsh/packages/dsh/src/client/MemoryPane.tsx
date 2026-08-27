@@ -12,13 +12,13 @@ import type { Translate } from './translate.ts'
 export interface MemoryPaneProps {
   t: Translate
   /** Which memories to list. */
-  allow: { global?: boolean; agent?: string; group?: string }
+  allow: { global?: boolean; agent?: string; group?: string; friend?: string }
   /** The scope new hand-added memories land in (this pane's identity). */
-  scope: { kind: 'global' } | { kind: 'agent'; name: string } | { kind: 'shared-group'; gid: string }
+  scope: { kind: 'global' } | { kind: 'agent'; name: string } | { kind: 'shared-group'; gid: string } | { kind: 'shared-friend'; fp: string }
 }
 
 /** The scopes this pane can write to (global always, plus its own when it has one). */
-type ScopeKind = 'global' | 'agent' | 'shared-group'
+type ScopeKind = 'global' | 'agent' | 'shared-group' | 'shared-friend'
 
 const pill: React.CSSProperties = { fontSize: 10.5, padding: '1px 6px', borderRadius: 8, border: '1px solid rgba(127,127,127,.4)', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap' }
 const autoPill: React.CSSProperties = { ...pill, borderColor: 'rgba(90,150,255,.5)', color: 'var(--dsw-alias-accent, #4c8dff)' }
@@ -38,7 +38,7 @@ export function MemoryPane({ t, allow, scope }: MemoryPaneProps) {
   const [items, setItems] = useState<ApiMemory[]>([])
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState('')
-  const [draftKind, setDraftKind] = useState<ScopeKind>(scope.kind === 'agent' ? 'agent' : scope.kind === 'shared-group' ? 'shared-group' : 'global')
+  const [draftKind, setDraftKind] = useState<ScopeKind>(scope.kind === 'agent' ? 'agent' : scope.kind === 'shared-group' ? 'shared-group' : scope.kind === 'shared-friend' ? 'shared-friend' : 'global')
   const [editing, setEditing] = useState<string | undefined>(undefined)
   const [editText, setEditText] = useState('')
   const [editKind, setEditKind] = useState<ScopeKind>('global')
@@ -48,12 +48,14 @@ export function MemoryPane({ t, allow, scope }: MemoryPaneProps) {
 
   const agentName = scope.kind === 'agent' ? scope.name : undefined
   const groupGid = scope.kind === 'shared-group' ? scope.gid : undefined
+  const friendFp = scope.kind === 'shared-friend' ? scope.fp : undefined
 
   /** Build the memory scope object for a selectable kind, using this pane's identity. */
   const scopeFor = (kind: ScopeKind): MemoryPaneProps['scope'] =>
     kind === 'agent' ? { kind: 'agent', name: agentName ?? '' }
       : kind === 'shared-group' ? { kind: 'shared-group', gid: groupGid ?? '' }
-        : { kind: 'global' }
+        : kind === 'shared-friend' ? { kind: 'shared-friend', fp: friendFp ?? '' }
+          : { kind: 'global' }
 
   /** The scope choices this pane offers (global always; its own only when it has one). */
   const scopeOptions: Array<{ kind: ScopeKind; label: string }> = scope.kind === 'agent'
@@ -66,7 +68,12 @@ export function MemoryPane({ t, allow, scope }: MemoryPaneProps) {
           { kind: 'global', label: t('memory.scope.global') },
           { kind: 'shared-group', label: t('memory.scope.onlyGroup') },
         ]
-      : [{ kind: 'global', label: t('memory.scope.global') }]
+      : scope.kind === 'shared-friend'
+        ? [
+            { kind: 'global', label: t('memory.scope.global') },
+            { kind: 'shared-friend', label: t('memory.scope.onlyFriend') },
+          ]
+        : [{ kind: 'global', label: t('memory.scope.global') }]
 
   /** The list filtered by the active filter (`all` = everything allowed). */
   const filteredItems = filter === 'all' ? items : items.filter(m => m.scope.kind === filter)
@@ -188,7 +195,7 @@ export function MemoryPane({ t, allow, scope }: MemoryPaneProps) {
                   <>
                     <div style={{ marginTop: 6, fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.content}</div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                      <button type="button" className="sm-linkbtn sm-muted" style={{ fontSize: 11.5 }} onClick={() => { setEditing(m.uid); setEditText(m.content); setEditKind(m.scope.kind === 'agent' ? 'agent' : m.scope.kind === 'shared-group' ? 'shared-group' : 'global') }} data-soulmirror-memory-edit>{t('memory.edit')}</button>
+                      <button type="button" className="sm-linkbtn sm-muted" style={{ fontSize: 11.5 }} onClick={() => { setEditing(m.uid); setEditText(m.content); setEditKind(m.scope.kind === 'agent' ? 'agent' : m.scope.kind === 'shared-group' ? 'shared-group' : m.scope.kind === 'shared-friend' ? 'shared-friend' : 'global') }} data-soulmirror-memory-edit>{t('memory.edit')}</button>
                       <button type="button" className="sm-linkbtn sm-muted" style={{ fontSize: 11.5 }} onClick={() => { remove(m.uid) }} data-soulmirror-memory-delete>{t('memory.delete')}</button>
                     </div>
                   </>

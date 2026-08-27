@@ -16,6 +16,7 @@ import { FriendSettingsPanel } from './alter-ui.tsx'
 import { api, networkStore } from './api.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { DraftCard } from './DraftCard.tsx'
+import { MemoryPane } from './MemoryPane.tsx'
 import type { Translate } from './translate.ts'
 import { draftsFor, formatAge, type InboxFriend } from './inbox-state.ts'
 import { formatClock, formatDay, tabsFor, type PaneTab, withDaySeparators, type ThreadEntry, type ThreadState } from './page-state.ts'
@@ -264,7 +265,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
         </div>
       </header>
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
-      {paneTab === 'home' ? friendHome : <>
+      {paneTab === 'home' ? friendHome : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true, friend: fp }} scope={{ kind: 'shared-friend', fp }} /> : <>
       <div className="sm-banner" role="note" data-soulmirror-readonly-banner>
         <span>{t('friend.banner.prefix')}<b>{t('friend.banner.mine')}</b>{t('friend.banner.middle')}<b>{t('friend.banner.theirs', { name: friend.name })}</b>{t('friend.banner.suffix')}</span>
         <button type="button" className="sm-ghostbtn" onClick={onGoAlter} data-soulmirror-banner-go>{t('friend.banner.go')}</button>
