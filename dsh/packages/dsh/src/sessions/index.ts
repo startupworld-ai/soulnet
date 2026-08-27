@@ -80,6 +80,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-tools'
 import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -100,6 +101,7 @@ import { DEFAULT_AUTO_REPLY_PER_HOUR, DEFAULT_REPLY_TIER, HourlyWindow, mentions
 import type { SoulmirrorSettings } from '../settings.ts'
 import { MemoryStore, type AllowScopes, type MemoryKind, type MemoryRecord, type MemoryScope } from '../memory/store.ts'
 import { extractMemories, type MemoryLlm } from '../memory/extract.ts'
+import { createRememberTool } from '../tools/remember.ts'
 import type {} from '../index.ts'
 
 export interface Config {
@@ -721,6 +723,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       setup: async (agentCtx: Context) => {
         if (mount !== undefined) await mount(agentCtx)
         installPersona(agentCtx, sessionId)
+        agentCtx.tools.register(createRememberTool(face, ctx.logger))
       },
     }
   }
@@ -754,6 +757,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       setup: async (agentCtx: Context) => {
         if (mount !== undefined) await mount(agentCtx)
         installAgentPersona(agentCtx, sessionId, seat)
+        agentCtx.tools.register(createRememberTool(face, ctx.logger))
       },
     }
   }
@@ -1650,14 +1654,16 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     ctx.on('session/event', (session, event) => {
       if (disposed) return
+      // 只有灵镜对话（分身 + 智能体）才发记忆提取弹窗；普通 dsh 工作区会话静默。
+      const soulmirror = session.id === alterId || agentNameOfSession(session.id) !== undefined
       // 埋点：owner 发话 → 弹「正在倾听/提炼」（带一条截断的对话线索）。
-      if (event.type === 'user/message' && classifyUserMessage(event.data) === 'owner') {
+      if (soulmirror && event.type === 'user/message' && classifyUserMessage(event.data) === 'owner') {
         const text = textOf((event.data as unknown as { content?: unknown }).content).replace(/\n/g, ' ').trim()
         const clue = text.length > 24 ? `${text.slice(0, 24)}…` : text
         emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
       }
       // 埋点：owner 回合结束且本回合没调 remember → 弹「没记忆」。
-      if (event.type === 'turn/end' && triggerOf(session.events).kind === 'owner' && !turnHadRemember(session.events)) {
+      if (soulmirror && event.type === 'turn/end' && triggerOf(session.events).kind === 'owner' && !turnHadRemember(session.events)) {
         emit({ kind: 'memory', phase: 'extracted', count: 0 })
       }
       if (alterId !== undefined && session.id === alterId) {
