@@ -24,7 +24,7 @@ function resolveRoot() {
   return path.resolve(__dirname, '..', '..')
 }
 const ROOT = resolveRoot()
-const SHIPPED_PACKAGES = ['soulnet-dsh', 'soulnet-peer-windows-x64', 'soulnet-peer-darwin-x64', 'soulnet-peer-darwin-arm64', 'soulnet-dsh-sidebar']
+const SHIPPED_PACKAGES = ['soulnet-dsh', 'soulnet-peer-windows-x64', 'soulnet-paygate-windows-x64', 'soulnet-peer-darwin-x64', 'soulnet-paygate-darwin-x64', 'soulnet-peer-darwin-arm64', 'soulnet-paygate-darwin-arm64', 'soulnet-dsh-sidebar']
 
 function nodeBin() {
   if (process.platform !== 'win32') {

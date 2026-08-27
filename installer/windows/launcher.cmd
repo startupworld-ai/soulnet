@@ -42,7 +42,7 @@ rem own plugins or settings).
 fc /b "%TEMPLATE%\profiles\web\%MARK%" "%PROFILE%\%MARK%" >nul 2>&1
 if errorlevel 1 (
   echo Updating the SoulMirror plugin in "%PROFILE%" ...
-  for %%P in (soulnet-dsh soulnet-peer-windows-x64 soulnet-dsh-sidebar) do (
+  for %%P in (soulnet-dsh soulnet-peer-windows-x64 soulnet-paygate-windows-x64 soulnet-dsh-sidebar) do (
     if exist "%TEMPLATE%\profiles\web\node_modules\%%P" (
       if exist "%PROFILE%\node_modules\%%P" rd /s /q "%PROFILE%\node_modules\%%P"
       robocopy "%TEMPLATE%\profiles\web\node_modules\%%P" "%PROFILE%\node_modules\%%P" /E /NFL /NDL /NJH /NJS >nul
