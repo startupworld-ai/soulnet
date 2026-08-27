@@ -37,7 +37,7 @@ go build -o bin/soulnet ./cmd/soulnet
 - **身份 = 一对密钥**（Ed25519 签名、X25519 加密）；指纹 `base64url(SHA-256(ed_pub)[:16])` 就是路由地址。没有注册、没有账号。
 - **名片**是自签名的 `soulmirror://card?…` URI，带两把公钥、收信邮局和昵称；加好友 = 交换名片。
 - **邮局**（`soulnet-relay`）是只看得到密文的哑 store-and-forward 信箱：`POST /mail`、`GET /mail`（长轮询）、`POST /mail/ack`。它还挂着 opt-in 的能力**目录**。任何人可自建。（规范 §9 的创力账本/经济接口目前由灵镜产品的 relay 扩展提供，不在内核里；随协议 v3 开放。）
-- 默认公共邮局：`https://relay.soulnet.startupworld.cn`。
+- 默认公共邮局：`https://relay.startupworld.cn`。
 
 以上全部在 `spec/a2a-wire-spec.md` 里逐字节钉死；`spec/vectors/` 让任何实现都能自证合规。轻端的 JSON-RPC 接口见 `cmd/soulnet/README.md`。
 

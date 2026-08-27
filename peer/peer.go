@@ -32,7 +32,7 @@ import (
 )
 
 // DefaultRelay is the public relay.
-const DefaultRelay = "https://relay.soulnet.startupworld.cn"
+const DefaultRelay = "https://relay.startupworld.cn"
 
 // Peer is one light-peer instance. The zero value is not usable; create it with Init.
 type Peer struct {

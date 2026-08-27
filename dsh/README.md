@@ -442,7 +442,7 @@ patch replaces the whole `config` of a row); the same fields are user settings:
 - id: soulmirror-network
   config:
     backend: soulnet            # soulnet | fake
-    relay: http://127.0.0.1:9390   # a local relay for testing; default https://relay.soulnet.startupworld.cn
+    relay: http://127.0.0.1:9390   # a local relay for testing; default https://relay.startupworld.cn
     home: C:\tmp\soulnet-home      # default $SOULNET_HOME, then ~/.soulnet
     # displayName: Alice          # create the identity on first start without onboarding
     # peerBinary: C:\tools\soulnet.exe   # overrides the platform package / PATH / bin lookup

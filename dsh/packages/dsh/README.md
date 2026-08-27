@@ -54,7 +54,7 @@ friends and messaging work without one.
 - `$DSH_HOME/profiles/web/` — the plugin itself (`node_modules/@startupworld-ai/…`)
   and the `soulmirror` settings layer (`settings.yaml`).
 
-Default relay: `https://relay.soulnet.startupworld.cn` (ciphertext only; self-host with
+Default relay: `https://relay.startupworld.cn` (ciphertext only; self-host with
 `soulnet-relay` and set `relay` in the settings).
 
 ## Rooms are plugins

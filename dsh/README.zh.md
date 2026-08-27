@@ -138,7 +138,7 @@ npx -y @deepseek-ai/dsh@0.1.1-rc.2 web --no-open --port 3099
 - id: soulmirror-network
   config:
     backend: soulnet            # soulnet | fake
-    relay: http://127.0.0.1:9390   # 测试用本地 relay；默认 https://relay.soulnet.startupworld.cn
+    relay: http://127.0.0.1:9390   # 测试用本地 relay；默认 https://relay.startupworld.cn
     home: C:\tmp\soulnet-home
 ```
 

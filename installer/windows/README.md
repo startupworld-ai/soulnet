@@ -53,7 +53,7 @@ dsh keeps per-profile plugin state under `$DSH_HOME/profiles/<name>/`:
   it is resolved through soulnet-dsh's client-inject list, so shipping the
   directory is enough).
 - `cordis.patch.yml` — the user's own override layer; shipped empty (`[]`),
-  so the plugin defaults apply: relay `https://relay.soulnet.startupworld.cn`, data
+  so the plugin defaults apply: relay `https://relay.startupworld.cn`, data
   in `~/.soulnet`, onboarding asks for a display name.
 - In-box bundles (`@deepseek-ai/dsh-*`) are **not** copied into the profile:
   on boot dsh maintains `$DSH_HOME/profiles/node_modules` as junctions into
