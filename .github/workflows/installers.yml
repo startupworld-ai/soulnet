@@ -1,0 +1,75 @@
+name: installers
+# Build the SoulMirror (DSH edition) one-click installers on their native OS:
+#   windows-latest -> SoulMirror-DSH-Setup-<version>.exe  (Inno Setup)
+#   macos-latest    -> SoulMirror-DSH-<version>.dmg        (hdiutil)
+# Both bundle DeepSeek Harness (dsh) + the soulnet-dsh plugin (and the Go peer
+# binary for the matching platform) into a self-contained, offline-first app.
+# Attach the artifacts to the workflow run and, on a version tag, to a GitHub
+# Release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: dsh/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Inno Setup 6
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install innosetup --no-progress -y
+      - name: Build the Windows installer
+        shell: bash
+        run: bash scripts/build-installer-win.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SoulMirror-DSH-Windows
+          path: dist/*.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: dsh/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the macOS installer
+        run: bash scripts/build-installer-mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SoulMirror-DSH-macOS
+          path: dist/*.dmg
+
+  release:
+    needs: [windows, macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
