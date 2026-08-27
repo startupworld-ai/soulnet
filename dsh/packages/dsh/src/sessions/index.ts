@@ -258,6 +258,8 @@ export interface AlterSessions {
   memoryRemove(uid: string): boolean
   /** 埋点：进群（未读多）时总结该群最近一段消息并提炼记忆（限量，避免全量 token）。 */
   memorySummarizeGroup(gid: string): void
+  /** 分身/agent 通过 soulmirror_remember 工具主动记住一条记忆（origin auto）。 */
+  memoryRemember(input: { kind: MemoryKind; content: string; scope: MemoryScope }): MemoryRecord
   /** Publish a live event (the tools plugin reports the entries it archived). */
   emit(event: SessionsEvent): void
   /** Subscribe to live events. */
@@ -1484,6 +1486,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
     memoryRemove: (uid) => memoryStore.remove(uid),
     memorySummarizeGroup: (gid) => { summarizeGroupMemories(gid) },
+    memoryRemember: (input) => memoryStore.add({ ...input, sourceCh: input.scope.kind === 'global' ? 'alter' : input.scope.kind === 'shared-group' ? 'group' : 'agent', origin: 'auto' }),
     emit,
     on: (listener) => {
       listeners.add(listener)
@@ -1611,30 +1614,6 @@ export function apply(ctx: Context, config: Config = {}): void {
         })
     }
 
-    /** 埋点：owner 主动发消息后提炼一次（不再每条/每回合都提炼）。 */
-    const scheduleMemoryExtract = (sessionId: string): void => {
-      setTimeout(() => {
-        if (disposed) return
-        const session = ctx.agents.get(sessionId as SessionId)?.session ?? ctx.sessions.get(sessionId as SessionId)
-        if (session === undefined) return
-        const trig = triggerOf(session.events)
-        // 只在 owner 主动发消息时提炼；好友来信/群消息不逐条提炼（进群未读多时另行总结）。
-        if (trig.kind !== 'owner') return
-        const name = agentNameOfSession(sessionId)
-        const scope: MemoryScope = name === undefined ? { kind: 'global' } : { kind: 'agent', name }
-        const allow: AllowScopes = name === undefined ? { global: true } : { global: true, agent: name }
-        const chat = chatFromEvents(session.events, { process: false })
-        const lines: string[] = []
-        for (const item of chat.items.slice(-20)) {
-          if (item.kind === 'owner') lines.push('owner: ' + item.text)
-          else if (item.kind === 'alter') lines.push('alter: ' + item.text)
-          else if (item.kind === 'inbound') lines.push(item.name + ': ' + item.body)
-          else if (item.kind === 'send') lines.push('to ' + item.fp + ': ' + item.body)
-        }
-        runMemoryExtract(scope, allow, lines.join('\n'), scope.kind + (name === undefined ? '' : ':' + name))
-      }, 0)
-    }
-
     /** 群消息总结的窗口上限（条数），避免几万条消息一次性喂给模型。 */
     const MEMORY_GROUP_WINDOW = 50
     /** 埋点：很久没来群（未读多）进群时，总结最近一段群消息并提炼记忆。 */
@@ -1659,13 +1638,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (disposed) return
       if (alterId !== undefined && session.id === alterId) {
         if (ALTER_EVENT_TYPES.has(event.type)) publishAlter()
-        if (event.type === 'turn/end') scheduleMemoryExtract(session.id)
         return
       }
       if (!AGENT_EVENT_TYPES.has(event.type)) return
       const name = agentNameOfSession(session.id)
       if (name !== undefined) publishAgent(name)
-      if (event.type === 'turn/end') { enforceGroupReply(session.id, event); scheduleMemoryExtract(session.id) }
+      if (event.type === 'turn/end') enforceGroupReply(session.id, event)
     })
     const agentGroupOfSession = (sessionId: string): { name: string; gid: string } | undefined => {
       for (const [name, byGid] of agentGroupSessionIds) {
