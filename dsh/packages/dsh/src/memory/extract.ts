@@ -35,15 +35,21 @@ export interface ExtractRequest {
   signal?: AbortSignal
 }
 
-const SYSTEM_PROMPT = [
-  'You are a memory extractor. From the given conversation summary, extract ONLY new, reusable, long-term memories about the owner — facts, preferences, decisions, promises, and summaries.',
-  'Rules:',
-  '- Ignore transient chatter, greetings, and anything already covered by the EXISTING memories.',
-  '- Write each memory as one concrete, self-contained sentence in the language of the summary (Chinese or English).',
-  '- Do not invent; only state what the conversation actually said.',
-  '- If nothing new is worth keeping, return an empty list.',
-  '- Answer with ONLY a JSON object of the shape {"memories":[{"kind":"fact|preference|decision|promise|summary","content":"..."}]}, no prose, no markdown fences.',
-].join('\n')
+/** 提炼系统提示：群 scope 关注「群/成员/群内决定」，其余 scope 关注「owner 本人」。 */
+function systemPromptFor(scope: MemoryScope): string {
+  const focus = scope.kind === 'shared-group'
+    ? 'long-term memories relevant to this GROUP — facts about the group and its members, shared decisions, promises, and context'
+    : 'long-term memories about the owner — facts, preferences, decisions, promises, and summaries'
+  return [
+    `You are a memory extractor. From the given conversation summary, extract ONLY new, reusable, ${focus}.`,
+    'Rules:',
+    '- Ignore transient chatter, greetings, and anything already covered by the EXISTING memories.',
+    '- Write each memory as one concrete, self-contained sentence in the language of the summary (Chinese or English).',
+    '- Do not invent; only state what the conversation actually said.',
+    '- If nothing new is worth keeping, return an empty list.',
+    '- Answer with ONLY a JSON object of the shape {"memories":[{"kind":"fact|preference|decision|promise|summary","content":"..."}]}, no prose, no markdown fences.',
+  ].join('\n')
+}
 
 interface RawMemory {
   kind?: unknown
@@ -97,7 +103,7 @@ export async function extractMemories(req: ExtractRequest): Promise<NewMemory[]>
     provider: req.provider,
     model: req.model,
     messages: [createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } })],
-    system: SYSTEM_PROMPT,
+    system: systemPromptFor(req.scope),
     ...(req.signal === undefined ? {} : { signal: req.signal }),
     temperature: 0.2,
     maxTokens: 1200,
@@ -117,7 +123,7 @@ export async function extractMemories(req: ExtractRequest): Promise<NewMemory[]>
     kind: m.kind,
     content: m.content,
     scope: req.scope,
-    sourceCh: req.scope.kind === 'global' ? 'alter' : 'agent',
+    sourceCh: req.scope.kind === 'global' ? 'alter' : req.scope.kind === 'shared-group' ? 'group' : 'agent',
     weight: 1.0,
     origin: 'auto' as const,
   }))
