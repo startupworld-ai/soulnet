@@ -84,7 +84,7 @@ import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:f
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALTER_EVENT_TYPES, chatFromEvents, classifyUserMessage, EMPTY_CHAT, EMPTY_LATEST, latestFromEvents, triggerOf, type AlterChat, type AlterLatest } from '../alter-state.ts'
+import { ALTER_EVENT_TYPES, chatFromEvents, classifyUserMessage, EMPTY_CHAT, EMPTY_LATEST, latestFromEvents, textOf, triggerOf, type AlterChat, type AlterLatest } from '../alter-state.ts'
 import { AgentRegistryStore, type SeatAgent } from '../agent-registry.ts'
 import { DraftStore, type PendingDraft } from '../drafts.ts'
 import type { A2AMessageId, A2ANoteKind, A2ASourceMeta, Fingerprint } from '../events.ts'
@@ -1649,9 +1649,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     ctx.on('session/event', (session, event) => {
       if (disposed) return
-      // 埋点：owner 发话 → 弹「正在倾听/提炼」。
+      // 埋点：owner 发话 → 弹「正在倾听/提炼」（带一条截断的对话线索）。
       if (event.type === 'user/message' && classifyUserMessage(event.data) === 'owner') {
-        emit({ kind: 'memory', phase: 'extracting', count: 0 })
+        const text = textOf((event.data as unknown as { content?: unknown }).content).replace(/\n/g, ' ').trim()
+        const clue = text.length > 24 ? `${text.slice(0, 24)}…` : text
+        emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
       }
       // 埋点：owner 回合结束且本回合没调 remember → 弹「没记忆」。
       if (event.type === 'turn/end' && triggerOf(session.events).kind === 'owner' && !turnHadRemember(session.events)) {
