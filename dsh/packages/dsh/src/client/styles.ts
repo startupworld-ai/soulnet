@@ -160,6 +160,10 @@ body[data-ds-dark-theme] { color-scheme: dark; }
 .sm-list-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 12px 8px; }
 .sm-list-head-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; font-size: 15px; }
 .sm-list-search { flex: none; padding: 0 12px 8px; display: flex; gap: 6px; align-items: center; }
+.sm-col2-tabs { flex: none; display: flex; gap: 2px; padding: 0 8px 6px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.sm-col2-tab { flex: 1; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font-size: 13px; padding: 6px 4px; border-bottom: 2px solid transparent; cursor: pointer; }
+.sm-col2-tab:hover { color: var(--dsw-alias-label-primary); }
+.sm-col2-tab.sm-active { color: var(--dsw-alias-brand-primary); border-bottom-color: var(--dsw-alias-brand-primary); font-weight: 600; }
 .sm-list-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 6px 6px; }
 .sm-list-foot { flex: none; padding: 8px 12px 12px; border-top: 1px solid var(--dsw-alias-border-l2); display: grid; gap: 6px; }
 .sm-req { display: flex; align-items: center; gap: 8px; margin: 2px 4px 4px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-base); }

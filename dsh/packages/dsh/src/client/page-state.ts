@@ -257,7 +257,10 @@ export function resolveSelection(friends: readonly Pick<InboxFriend, 'fp'>[], gr
   return friends.some(f => f.fp === selected) ? selected : ALTER_KEY
 }
 
-// ——— page tabs (pane = third column body; the second column is a single list) ———
+// ——— page tabs (col2 = second column, pane = third column body) ———
+
+/** Which section the second column (the list) shows: the message list, or the address book. */
+export type Col2Tab = 'messages' | 'contacts'
 
 /** Which panel of the third column (content area) is active. */
 export type PaneTab = 'chat' | 'announce' | 'home' | 'members' | 'admin' | 'info' | 'settings' | 'memory'

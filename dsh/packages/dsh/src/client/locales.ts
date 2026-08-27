@@ -438,6 +438,7 @@ export const en = {
   'group.join.applied': 'Application sent.',
   'group.apps.badge': '{n} application(s) waiting',
   // ——— second-column sections + third-column pane tabs ———
+  'col2.messages': 'Messages',
   'col2.contacts': 'Contacts',
   'col2.agents': 'Agents',
   'col2.groups': 'Groups',
@@ -921,6 +922,7 @@ export const zh: Record<keyof typeof en, string> = {
   'group.join.applied': '申请已发出。',
   'group.apps.badge': '{n} 条进群申请待处理',
   // ——— 二级栏分区 + 三级正文 tab ———
+  'col2.messages': '消息',
   'col2.contacts': '通讯录',
   'col2.agents': '智能体',
   'col2.groups': '群聊',

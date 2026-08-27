@@ -177,6 +177,10 @@ export function SoulmirrorPage({ scope, t, renderSlot }: SoulmirrorPageProps) {
   const goAlter = (): void => { pageStore.select(ALTER_KEY) }
   const goFriend = (fp: string): void => { pageStore.select(fp) }
   const goGroup = (gid: string): void => { pageStore.select(groupKey(gid)) }
+  const openContact = (fp: string): void => {
+    pageStore.select(fp)
+    pageStore.setPaneTab('home')
+  }
 
   return (
     <div ref={root} className="sm-page-root" style={{ left }} role="dialog" aria-label={t('page.title')} data-soulmirror-page data-soulmirror-page-left={left}>
@@ -184,6 +188,7 @@ export function SoulmirrorPage({ scope, t, renderSlot }: SoulmirrorPageProps) {
         t={t}
         selected={selected}
         onSelect={(key) => { pageStore.select(key) }}
+        onSelectContact={openContact}
         onAccepted={(fp) => { pageStore.select(fp) }}
         onClose={() => { pageStore.close() }}
       />
