@@ -67,7 +67,11 @@ func newTestNode(t *testing.T, relayURL, name string) *testNode {
 // await waits for an event satisfying pred (others are discarded); fatal on timeout.
 func (tn *testNode) await(t *testing.T, what string, pred func(Event) bool) Event {
 	t.Helper()
-	deadline := time.After(15 * time.Second)
+	// 60s: the peer's transient-retry budget (retryBudget) is 60 attempts at
+	// >=500ms apart (~30s) for in-flight races like a group sender key that has
+	// not reached us yet. A 15s ceiling can fail on a busy runner before the
+	// retry resolves, so the test timeout must comfortably exceed that budget.
+	deadline := time.After(60 * time.Second)
 	for {
 		select {
 		case ev := <-tn.events:

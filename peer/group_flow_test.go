@@ -11,7 +11,10 @@ import (
 // waitUntil polls pred until true or fails the test.
 func waitUntil(t *testing.T, what string, pred func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	// 60s: matches `await` in peer_test.go — the peer's transient-retry budget
+	// (~30s) for a sender key still in flight must fit inside the ceiling, or a
+	// slow CI runner flakes.
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if pred() {
 			return
