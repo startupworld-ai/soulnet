@@ -102,6 +102,7 @@ function harness(options: { approval?: 'allowed-once' | 'rejected' | 'unavailabl
     memoryAdd: (input) => ({ id: 0, uid: 'mem-1', kind: input.kind, content: input.content, scope: input.scope, sourceCh: 'manual', sourceRef: '', weight: 1, origin: 'manual', createdAt: Date.now(), lastHitAt: null, hitCount: 0 }),
     memoryUpdate: () => true,
     memoryRemove: () => true,
+    memorySummarizeGroup: () => {},
     friendMuted: () => false,
     setFriendMuted: async (_fp, muted) => muted,
     groupMuted: () => false,

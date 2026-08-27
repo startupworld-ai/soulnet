@@ -241,6 +241,8 @@ export const api = {
   memoryUpdate: (uid: string, content: string, scope?: { kind: string; name?: string; fp?: string; gid?: string }) =>
     call<{ ok: boolean }>('memory.update', { uid, content, ...(scope === undefined ? {} : { scope }) }),
   memoryRemove: (uid: string) => call<{ ok: boolean }>('memory.remove', { uid }),
+  /** 埋点：进群（未读多）时总结该群最近一段消息并提炼记忆。 */
+  memorySummarize: (gid: string) => call<{ ok: boolean }>('memory.summarize', { gid }),
   /** The alter's latest state (null = no session yet). */
   sessionLatest: () => call<{ state: ApiAlterState | null }>('session.latest', {}),
   /** The alter transcript (last `limit` items). */

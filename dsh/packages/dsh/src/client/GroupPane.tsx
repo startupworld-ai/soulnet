@@ -25,6 +25,9 @@ import type { Translate } from './translate.ts'
 /** Roster info survives pane switches, so revisiting a group paints names instantly. */
 const infoCache = new Map<string, ApiGroupInfo>()
 
+/** 很久没来群（未读 >= 此阈值）进群时，触发一次群记忆提炼（避免每条消息都总结）。 */
+const GROUP_MEMORY_MIN_UNREAD = 20
+
 export interface GroupPaneProps {
   t: Translate
   group: ApiGroup
@@ -123,6 +126,13 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
     void networkStore.markReadGroup(gid)
   }, [gid, unread, visible, thread.entries.length])
+
+  // 埋点：很久没来群（未读多）进群时，触发一次最近消息的记忆提炼。
+  useEffect(() => {
+    if (group.unread < GROUP_MEMORY_MIN_UNREAD) return
+    void api.memorySummarize(gid).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gid])
 
   const run = async (key: string, action: () => Promise<void>): Promise<void> => {
     setBusy(key)

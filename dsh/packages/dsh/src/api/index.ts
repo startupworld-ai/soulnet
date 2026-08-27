@@ -507,6 +507,15 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
         if (uid === undefined) return bad('uid required')
         return { status: 200, body: { ok: sessions.memoryRemove(uid) } }
       }
+      case 'memory.summarize': {
+        // 埋点：进群（未读多）时由客户端触发，总结该群最近一段消息并提炼记忆。
+        const sessions = options.sessions()
+        if (sessions === undefined) return { status: 503, body: { error: { code: -32603, message: 'sessions plugin not mounted' } } }
+        const gid = text(body['gid'])
+        if (gid === undefined) return bad('gid required')
+        sessions.memorySummarizeGroup(gid)
+        return { status: 200, body: { ok: true } }
+      }
       case 'group.create': {
         const name = text(body['name'])
         if (name === undefined) return bad('name must not be empty')

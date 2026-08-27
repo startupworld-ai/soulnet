@@ -256,6 +256,8 @@ export interface AlterSessions {
   memoryUpdate(uid: string, content: string, scope?: MemoryScope): boolean
   /** Delete one memory by uid. */
   memoryRemove(uid: string): boolean
+  /** 埋点：进群（未读多）时总结该群最近一段消息并提炼记忆（限量，避免全量 token）。 */
+  memorySummarizeGroup(gid: string): void
   /** Publish a live event (the tools plugin reports the entries it archived). */
   emit(event: SessionsEvent): void
   /** Subscribe to live events. */
@@ -1396,6 +1398,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
   }
 
+  // 进群总结的入口：声明在外层作用域供 face 引用，实际实现在下方 try 块内赋值。
+  let summarizeGroupMemories: (gid: string) => void = () => {}
+
   const face: AlterSessions = {
     sessionId: () => alterId,
     ensure: async () => (await ensureAlter()).session.id,
@@ -1478,6 +1483,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       try { return memoryStore.update(uid, content, scope) !== undefined } catch { return false }
     },
     memoryRemove: (uid) => memoryStore.remove(uid),
+    memorySummarizeGroup: (gid) => { summarizeGroupMemories(gid) },
     emit,
     on: (listener) => {
       listeners.add(listener)
@@ -1582,23 +1588,41 @@ export function apply(ctx: Context, config: Config = {}): void {
       const name = agentNameOfSession(sessionId)
       if (name !== undefined) publishAgent(name)
     }
+    /** 提炼共用的执行体：喂给模型、去重入库、发进度帧。 */
+    const runMemoryExtract = (scope: MemoryScope, allow: AllowScopes, summary: string, label: string): void => {
+      const opts = defaultAgentOptions()
+      if (opts === undefined) { log('warn', 'memory: no default model configured — skipping extraction'); return }
+      const llm = (ctx as unknown as { get(name: string): unknown }).get('llm') as unknown as MemoryLlm | undefined
+      if (llm === undefined) { log('warn', 'memory: llm service unavailable — skipping extraction'); return }
+      if (summary.trim() === '') { log('info', 'memory: nothing to summarize for ' + label); return }
+      const existing = memoryStore.list(allow).map(m => m.content)
+      log('info', 'memory: extracting for ' + label + ' (' + summary.length + ' chars)')
+      const clue = summary.replace(/\n/g, ' ').trim().slice(0, 24)
+      emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
+      void extractMemories({ llm, provider: opts.provider, model: opts.model, summary, existing, scope })
+        .then((memories) => {
+          const saved = memories.map(m => memoryStore.add(m))
+          if (saved.length > 0) log('info', 'memory: extracted ' + saved.length + ' item(s) -> ' + label)
+          emit({ kind: 'memory', phase: 'extracted', count: saved.length, memories: saved.map(r => ({ id: r.uid, content: r.content })) })
+        })
+        .catch((error: unknown) => {
+          log('warn', 'memory extract failed: ' + String(error))
+          emit({ kind: 'memory', phase: 'extracted', count: 0 })
+        })
+    }
+
+    /** 埋点：owner 主动发消息后提炼一次（不再每条/每回合都提炼）。 */
     const scheduleMemoryExtract = (sessionId: string): void => {
       setTimeout(() => {
         if (disposed) return
         const session = ctx.agents.get(sessionId as SessionId)?.session ?? ctx.sessions.get(sessionId as SessionId)
         if (session === undefined) return
-        const opts = defaultAgentOptions()
-        if (opts === undefined) { log('warn', 'memory: no default model configured — skipping extraction'); return }
-        const name = agentNameOfSession(sessionId)
         const trig = triggerOf(session.events)
-        const groupTurn = trig.kind === 'group' && trig.gid !== undefined
-        const scope: MemoryScope = groupTurn
-          ? { kind: 'shared-group', gid: trig.gid! }
-          : name === undefined ? { kind: 'global' } : { kind: 'agent', name }
-        const allow: AllowScopes = groupTurn
-          ? { global: true, group: trig.gid! }
-          : name === undefined ? { global: true } : { global: true, agent: name }
-        const existing = memoryStore.list(allow).map(m => m.content)
+        // 只在 owner 主动发消息时提炼；好友来信/群消息不逐条提炼（进群未读多时另行总结）。
+        if (trig.kind !== 'owner') return
+        const name = agentNameOfSession(sessionId)
+        const scope: MemoryScope = name === undefined ? { kind: 'global' } : { kind: 'agent', name }
+        const allow: AllowScopes = name === undefined ? { global: true } : { global: true, agent: name }
         const chat = chatFromEvents(session.events, { process: false })
         const lines: string[] = []
         for (const item of chat.items.slice(-20)) {
@@ -1607,22 +1631,25 @@ export function apply(ctx: Context, config: Config = {}): void {
           else if (item.kind === 'inbound') lines.push(item.name + ': ' + item.body)
           else if (item.kind === 'send') lines.push('to ' + item.fp + ': ' + item.body)
         }
-        const summary = lines.join('\n')
-        log('info', 'memory: extracting for ' + scope.kind + (name === undefined ? '' : ':' + name) + ' (' + summary.length + ' chars)')
-        const clue = summary.replace(/\n/g, ' ').trim().slice(0, 24)
-        emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
-        const llm = (ctx as unknown as { get(name: string): unknown }).get('llm') as unknown as MemoryLlm | undefined
-        if (llm === undefined) { log('warn', 'memory: llm service unavailable — skipping extraction'); return }
-        void extractMemories({ llm, provider: opts.provider, model: opts.model, summary, existing, scope })
-          .then((memories) => {
-            const saved = memories.map(m => memoryStore.add(m))
-            if (saved.length > 0) log('info', 'memory: extracted ' + saved.length + ' item(s) -> ' + scope.kind + (name === undefined ? '' : ':' + name))
-            emit({ kind: 'memory', phase: 'extracted', count: saved.length, memories: saved.map(r => ({ id: r.uid, content: r.content })) })
+        runMemoryExtract(scope, allow, lines.join('\n'), scope.kind + (name === undefined ? '' : ':' + name))
+      }, 0)
+    }
+
+    /** 群消息总结的窗口上限（条数），避免几万条消息一次性喂给模型。 */
+    const MEMORY_GROUP_WINDOW = 50
+    /** 埋点：很久没来群（未读多）进群时，总结最近一段群消息并提炼记忆。 */
+    summarizeGroupMemories = (gid: string): void => {
+      setTimeout(() => {
+        if (disposed) return
+        void client.groups.conversation(gid, { limit: MEMORY_GROUP_WINDOW })
+          .then(({ entries }) => {
+            const lines: string[] = []
+            for (const e of entries) {
+              lines.push((e.from === undefined ? 'member' : e.from) + ': ' + e.body)
+            }
+            runMemoryExtract({ kind: 'shared-group', gid }, { global: true, group: gid }, lines.join('\n'), 'shared-group:' + gid)
           })
-          .catch((error: unknown) => {
-            log('warn', 'memory extract failed: ' + String(error))
-            emit({ kind: 'memory', phase: 'extracted', count: 0 })
-          })
+          .catch((error: unknown) => { log('warn', 'memory: group summary conversation failed for ' + gid + ': ' + String(error)) })
       }, 0)
     }
 
