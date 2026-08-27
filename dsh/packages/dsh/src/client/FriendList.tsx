@@ -16,7 +16,7 @@ import { api, networkStore, type ApiGroup, type ApiGroupProfile } from './api.ts
 import { GroupCreateDialog } from './GroupCreateDialog.tsx'
 import type { Translate } from './translate.ts'
 import { formatAge, previewOf, type InboxFriend } from './inbox-state.ts'
-import { agentKey, ALTER_KEY, groupKey, type Col2Tab } from './page-state.ts'
+import { agentKey, ALTER_KEY, groupKey } from './page-state.ts'
 import { AgentSettingsSheet } from './AgentSettingsSheet.tsx'
 import { pageStore } from './page-store.ts'
 import { SoulMirrorIcon } from './SidebarEntry.tsx'
@@ -199,9 +199,6 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
     const nb = b.kind === 'friend' ? b.f.name : b.g.name
     return na.localeCompare(nb)
   })
-  // Split the combined rows by the second-column tab.
-  const friendRows = rows.filter((r): r is Extract<ChatRowData, { kind: 'friend' }> => r.kind === 'friend')
-  const groupRows = rows.filter((r): r is Extract<ChatRowData, { kind: 'group' }> => r.kind === 'group')
   // Search hits: names first, then message content out of the cached archives
   // (all threads are prefetched while the page is open).
   const nameHits: ChatRowData[] = q === ''
@@ -228,7 +225,6 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
   const drafts = inbox.drafts.length
   const alterRunning = page.alter.status === 'running' || page.alter.chat.running || page.alter.instructing
   const alterSelected = selected === ALTER_KEY
-  const col2Tab: Col2Tab = page.col2Tab
 
   const run = async (key: string, action: () => Promise<string | undefined>): Promise<void> => {
     setBusy(key)
@@ -271,7 +267,7 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
       const { gid } = await api.groupApply(joinUri.trim())
       setJoinUri('')
       setDialog(undefined)
-      if (gid !== '') { pageStore.setCol2Tab('groups'); onSelect(groupKey(gid)) }
+      if (gid !== '') { onSelect(groupKey(gid)) }
       return t('group.join.applied')
     })
   }
@@ -411,7 +407,7 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
               <>
                 <div className="sm-plus-backdrop" role="presentation" onClick={() => { setPlusOpen(false) }} />
                 <div className="sm-plusmenu" role="menu" data-soulmirror-plus-menu>
-                  <button type="button" role="menuitem" onClick={() => { setPlusOpen(false); pageStore.setCol2Tab('groups'); setCreateOpen(true) }} data-soulmirror-plus-new-group>
+                  <button type="button" role="menuitem" onClick={() => { setPlusOpen(false); setCreateOpen(true) }} data-soulmirror-plus-new-group>
                     {t('group.create')}
                   </button>
                   <button type="button" role="menuitem" onClick={() => { setPlusOpen(false); setDialog('add') }} data-soulmirror-plus-add-friend>
@@ -426,185 +422,142 @@ export function FriendList({ t, selected, onSelect, onAccepted, onClose }: Frien
             : null}
         </span>
       </div>
-      <div className="sm-col2-tabs" data-soulmirror-col2-tabs>
-        {(['contacts', 'agents', 'groups'] as const).map(tab => (
-          <button
-            key={tab}
-            type="button"
-            className={`sm-col2-tab${col2Tab === tab ? ' sm-active' : ''}`}
-            onClick={() => { pageStore.setCol2Tab(tab) }}
-            aria-pressed={col2Tab === tab}
-            data-soulmirror-col2-tab={tab}
-          >
-            {t(`col2.${tab}`)}
-          </button>
-        ))}
-      </div>
       <div className="sm-list-body">
         {protocolOpen ? <ProtocolEditor t={t} /> : null}
 
-        {/* ——— 通讯录: My alter pinned + pending requests + friends ——— */}
-        {col2Tab === 'contacts' && (
-          <>
-            <div className="sm-section">{t('col2.contacts.section')}</div>
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-              <li>
-                <button
-                  type="button"
-                  className={`sm-row sm-row-alter${alterSelected ? ' sm-selected' : ''}`}
-                  onClick={() => { onSelect(ALTER_KEY) }}
-                  aria-pressed={alterSelected}
-                  data-soulmirror-page-alter
-                  data-soulmirror-selected={alterSelected ? 'true' : undefined}
-                >
-                  <span className="sm-avawrap">
-                    <span className="sm-avatar sm-avatar-alter" aria-hidden><SoulMirrorIcon size={16} /></span>
-                    {drafts > 0 ? <span className="sm-badge" data-soulmirror-alter-drafts={drafts}>{drafts}</span> : null}
-                  </span>
-                  <span className="sm-row-body">
-                    <span className="sm-row-title">
-                      <span className="sm-row-name">{t('alter.me')} <span className={`sm-livedot${alterRunning ? ' sm-busy' : ''}`} aria-hidden /></span>
-                    </span>
-                    <span className="sm-row-preview">{alterRunning ? t('alter.status.running') : drafts > 0 ? t('alter.row.drafts', { n: drafts }) : t('alter.row.hint')}</span>
-                  </span>
-                </button>
-              </li>
-            </ul>
-            {inbox.pending.length > 0
-              ? (
-                <>
-                  <div className="sm-section">{t('page.pending')} · {inbox.pending.length}</div>
-                  <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-                    {inbox.pending.map(p => (
-                      <li key={p.id} className="sm-req" data-soulmirror-page-pending={p.id}>
-                        <span className="sm-avatar sm-avatar-sm" aria-hidden>{p.name.slice(0, 1)}</span>
-                        <span className="sm-row-body">
-                          <span className="sm-row-title"><span className="sm-row-name">{p.name}</span><span className="sm-row-time">{p.createdAt === undefined ? '' : formatAge(Date.parse(p.createdAt))}</span></span>
-                          <span className="sm-row-preview">{p.greeting === '' ? t('inbox.pending.noGreeting') : previewOf(p.greeting)}</span>
-                        </span>
-                        <span className="sm-pending-actions">
-                          <Tooltip label={t('settings.pending.accept')} side="bottom">
-                            <button
-                              type="button"
-                              className="sm-iconbtn"
-                              aria-label={t('settings.pending.accept')}
-                              disabled={busy !== undefined}
-                              onClick={() => {
-                                void run(`accept:${p.id}`, async () => {
-                                  const r = await api.accept(p.id)
-                                  onAccepted?.(r.friend.fp)
-                                  return t('inbox.pending.accepted', { name: r.friend.name })
-                                })
-                              }}
-                            >
-                              <IconCheckOutline14 size={14} />
-                            </button>
-                          </Tooltip>
-                          <Tooltip label={t('settings.pending.reject')} side="bottom">
-                            <button type="button" className="sm-iconbtn" aria-label={t('settings.pending.reject')} disabled={busy !== undefined} onClick={() => { void run(`reject:${p.id}`, async () => { await api.reject(p.id); return undefined }) }}>
-                              <IconCloseFill14 size={14} />
-                            </button>
-                          </Tooltip>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )
-              : null}
-            <div className="sm-section">{t('chats.section')}</div>
-            {friendRows.length === 0
-              ? (
-                <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>
-                  {identity === null ? t('page.empty.noFriends.noIdentity') : q !== '' ? t('page.empty.noMatch', { query }) : t('chats.empty')}
-                </p>
-              )
-              : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-friends data-soulmirror-page-chats>
-                  {friendRows.map(r => (
-                    <ChatRow
-                      key={r.rowKey}
-                      row={r}
-                      typing={inbox.typing[r.f.fp] === true || r.f.typing === true}
-                      apps={0}
-                      selected={selected === r.rowKey}
-                      t={t}
-                      onSelect={() => { onSelect(r.rowKey) }}
-                    />
-                  ))}
-                </ul>
-              )}
-          </>
-        )}
+        {/* My alter pinned */}
+        <div className="sm-section">{t('col2.contacts.section')}</div>
+        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          <li>
+            <button
+              type="button"
+              className={`sm-row sm-row-alter${alterSelected ? ' sm-selected' : ''}`}
+              onClick={() => { onSelect(ALTER_KEY) }}
+              aria-pressed={alterSelected}
+              data-soulmirror-page-alter
+              data-soulmirror-selected={alterSelected ? 'true' : undefined}
+            >
+              <span className="sm-avawrap">
+                <span className="sm-avatar sm-avatar-alter" aria-hidden><SoulMirrorIcon size={16} /></span>
+                {drafts > 0 ? <span className="sm-badge" data-soulmirror-alter-drafts={drafts}>{drafts}</span> : null}
+              </span>
+              <span className="sm-row-body">
+                <span className="sm-row-title">
+                  <span className="sm-row-name">{t('alter.me')} <span className={`sm-livedot${alterRunning ? ' sm-busy' : ''}`} aria-hidden /></span>
+                </span>
+                <span className="sm-row-preview">{alterRunning ? t('alter.status.running') : drafts > 0 ? t('alter.row.drafts', { n: drafts }) : t('alter.row.hint')}</span>
+              </span>
+            </button>
+          </li>
+        </ul>
 
-        {/* ——— 智能体: seat agents ——— */}
-        {col2Tab === 'agents' && (
-          <>
-            <div className="sm-section" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ flex: 1 }}>{t('agents.section')}</span>
-              <button type="button" className="sm-linkbtn" onClick={() => { setAgentSheetOpen(true) }} data-soulmirror-agents-add>＋ {t('settings.agents.add')}</button>
-            </div>
-            {(net.state?.agents?.length ?? 0) === 0
-              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{t('col2.agents.empty')}</p>
-              : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-                  {(net.state?.agents ?? []).map((a) => {
-                    const key = agentKey(a.name)
-                    const agentSelected = selected === key
-                    return (
-                      <li key={a.name}>
+        {inbox.pending.length > 0
+          ? (
+            <>
+              <div className="sm-section">{t('page.pending')} · {inbox.pending.length}</div>
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {inbox.pending.map(p => (
+                  <li key={p.id} className="sm-req" data-soulmirror-page-pending={p.id}>
+                    <span className="sm-avatar sm-avatar-sm" aria-hidden>{p.name.slice(0, 1)}</span>
+                    <span className="sm-row-body">
+                      <span className="sm-row-title"><span className="sm-row-name">{p.name}</span><span className="sm-row-time">{p.createdAt === undefined ? '' : formatAge(Date.parse(p.createdAt))}</span></span>
+                      <span className="sm-row-preview">{p.greeting === '' ? t('inbox.pending.noGreeting') : previewOf(p.greeting)}</span>
+                    </span>
+                    <span className="sm-pending-actions">
+                      <Tooltip label={t('settings.pending.accept')} side="bottom">
                         <button
                           type="button"
-                          className={`sm-row${agentSelected ? ' sm-selected' : ''}`}
-                          onClick={() => { onSelect(key) }}
-                          aria-pressed={agentSelected}
-                          data-soulmirror-page-agent={a.name}
-                          data-soulmirror-selected={agentSelected ? 'true' : undefined}
+                          className="sm-iconbtn"
+                          aria-label={t('settings.pending.accept')}
+                          disabled={busy !== undefined}
+                          onClick={() => {
+                            void run(`accept:${p.id}`, async () => {
+                              const r = await api.accept(p.id)
+                              onAccepted?.(r.friend.fp)
+                              return t('inbox.pending.accepted', { name: r.friend.name })
+                            })
+                          }}
                         >
-                          <span className="sm-avawrap">
-                            <span className="sm-avatar" aria-hidden>🤖</span>
-                          </span>
-                          <span className="sm-row-body">
-                            <span className="sm-row-title">
-                              <span className="sm-row-name">{a.name} <span className={`sm-livedot${a.status === 'running' ? ' sm-busy' : ''}`} aria-hidden /></span>
-                            </span>
-                            <span className="sm-row-preview">{a.status === 'running' ? t('settings.agents.status.running') : a.cwd ?? t('settings.agents.status.idle')}</span>
-                          </span>
+                          <IconCheckOutline14 size={14} />
                         </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            {agentSheetOpen
-              ? <AgentSettingsSheet t={t} onClose={() => { setAgentSheetOpen(false) }} onSaved={(name) => { onSelect(agentKey(name)) }} />
-              : null}
-          </>
-        )}
+                      </Tooltip>
+                      <Tooltip label={t('settings.pending.reject')} side="bottom">
+                        <button type="button" className="sm-iconbtn" aria-label={t('settings.pending.reject')} disabled={busy !== undefined} onClick={() => { void run(`reject:${p.id}`, async () => { await api.reject(p.id); return undefined }) }}>
+                          <IconCloseFill14 size={14} />
+                        </button>
+                      </Tooltip>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )
+          : null}
 
-        {/* ——— 群聊: groups ——— */}
-        {col2Tab === 'groups' && (
-          <>
-            <div className="sm-section">{t('groups.section')}</div>
-            {groupRows.length === 0
-              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{q !== '' ? t('page.empty.noMatch', { query }) : t('col2.groups.empty')}</p>
-              : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-groups>
-                  {groupRows.map(r => (
-                    <ChatRow
-                      key={r.rowKey}
-                      row={r}
-                      typing={false}
-                      apps={inbox.groupApps[r.g.gid] ?? 0}
-                      selected={selected === r.rowKey}
-                      t={t}
-                      onSelect={() => { onSelect(r.rowKey) }}
-                    />
-                  ))}
-                </ul>
-              )}
-          </>
-        )}
+        {/* seat agents */}
+        <div className="sm-section" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ flex: 1 }}>{t('agents.section')}</span>
+          <button type="button" className="sm-linkbtn" onClick={() => { setAgentSheetOpen(true) }} data-soulmirror-agents-add>＋ {t('settings.agents.add')}</button>
+        </div>
+        {(net.state?.agents?.length ?? 0) === 0
+          ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{t('col2.agents.empty')}</p>
+          : (
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              {(net.state?.agents ?? []).map((a) => {
+                const key = agentKey(a.name)
+                const agentSelected = selected === key
+                return (
+                  <li key={a.name}>
+                    <button
+                      type="button"
+                      className={`sm-row${agentSelected ? ' sm-selected' : ''}`}
+                      onClick={() => { onSelect(key) }}
+                      aria-pressed={agentSelected}
+                      data-soulmirror-page-agent={a.name}
+                      data-soulmirror-selected={agentSelected ? 'true' : undefined}
+                    >
+                      <span className="sm-avawrap">
+                        <span className="sm-avatar" aria-hidden>🤖</span>
+                      </span>
+                      <span className="sm-row-body">
+                        <span className="sm-row-title">
+                          <span className="sm-row-name">{a.name} <span className={`sm-livedot${a.status === 'running' ? ' sm-busy' : ''}`} aria-hidden /></span>
+                        </span>
+                        <span className="sm-row-preview">{a.status === 'running' ? t('settings.agents.status.running') : a.cwd ?? t('settings.agents.status.idle')}</span>
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        {agentSheetOpen
+          ? <AgentSettingsSheet t={t} onClose={() => { setAgentSheetOpen(false) }} onSaved={(name) => { onSelect(agentKey(name)) }} />
+          : null}
+
+        {/* unified conversation list (friends + groups mixed, WeChat-style) */}
+        <div className="sm-section">{t('chats.section')}</div>
+        {rows.length === 0
+          ? (
+            <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>
+              {identity === null ? t('page.empty.noFriends.noIdentity') : t('chats.empty')}
+            </p>
+          )
+          : (
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-chats>
+              {rows.map(r => (
+                <ChatRow
+                  key={r.rowKey}
+                  row={r}
+                  typing={r.kind === 'friend' && (inbox.typing[r.f.fp] === true || r.f.typing === true)}
+                  apps={r.kind === 'group' ? (inbox.groupApps[r.g.gid] ?? 0) : 0}
+                  selected={selected === r.rowKey}
+                  t={t}
+                  onSelect={() => { onSelect(r.rowKey) }}
+                />
+              ))}
+            </ul>
+          )}
       </div>
       {note !== undefined || net.error !== undefined
         ? (
