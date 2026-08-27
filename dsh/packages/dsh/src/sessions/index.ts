@@ -84,7 +84,7 @@ import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:f
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALTER_EVENT_TYPES, chatFromEvents, EMPTY_CHAT, EMPTY_LATEST, latestFromEvents, triggerOf, type AlterChat, type AlterLatest } from '../alter-state.ts'
+import { ALTER_EVENT_TYPES, chatFromEvents, classifyUserMessage, EMPTY_CHAT, EMPTY_LATEST, latestFromEvents, triggerOf, type AlterChat, type AlterLatest } from '../alter-state.ts'
 import { AgentRegistryStore, type SeatAgent } from '../agent-registry.ts'
 import { DraftStore, type PendingDraft } from '../drafts.ts'
 import type { A2AMessageId, A2ANoteKind, A2ASourceMeta, Fingerprint } from '../events.ts'
@@ -1634,8 +1634,29 @@ export function apply(ctx: Context, config: Config = {}): void {
 
     // Agent panes also stream the THINKING (reasoning deltas); the alter pane does not.
     const AGENT_EVENT_TYPES = new Set([...ALTER_EVENT_TYPES, 'assistant/chunk', 'reasoning-chunks'])
+    /** 本回合是否调用了 soulmirror_remember（决定收尾弹「有记忆」还是「没记忆」）。 */
+    const turnHadRemember = (events: readonly { type: string; data: unknown }[]): boolean => {
+      let start = -1
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        if (events[i]!.type === 'turn/start') { start = i; break }
+      }
+      if (start < 0) return false
+      for (let i = start; i < events.length; i += 1) {
+        const ev = events[i]!
+        if (ev.type === 'tool/call' && (ev.data as Record<string, unknown>)['name'] === 'soulmirror_remember') return true
+      }
+      return false
+    }
     ctx.on('session/event', (session, event) => {
       if (disposed) return
+      // 埋点：owner 发话 → 弹「正在倾听/提炼」。
+      if (event.type === 'user/message' && classifyUserMessage(event.data) === 'owner') {
+        emit({ kind: 'memory', phase: 'extracting', count: 0 })
+      }
+      // 埋点：owner 回合结束且本回合没调 remember → 弹「没记忆」。
+      if (event.type === 'turn/end' && triggerOf(session.events).kind === 'owner' && !turnHadRemember(session.events)) {
+        emit({ kind: 'memory', phase: 'extracted', count: 0 })
+      }
       if (alterId !== undefined && session.id === alterId) {
         if (ALTER_EVENT_TYPES.has(event.type)) publishAlter()
         return
