@@ -16,6 +16,7 @@ import { networkStore, type ApiChatItem } from './api.ts'
 import type { AlterCardOwnerProps } from './alter-card.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { DraftCard } from './DraftCard.tsx'
+import { MemoryPane } from './MemoryPane.tsx'
 import type { SoulmirrorSettingsValues } from './SettingsSection.tsx'
 import type { Translate } from './translate.ts'
 import { formatClock, formatDay, tabsFor, type PaneTab } from './page-state.ts'
@@ -28,6 +29,8 @@ export interface AlterPaneProps {
   onOpenSession: (sessionId: string) => void
   /** Jump to a friend's read-only thread. */
   onGoFriend: (fp: string) => void
+  /** Jump to a group's chat (from a group message relayed into the alter). */
+  onGoGroup: (gid: string) => void
   /** The page's `alter.card` render authorization, handed down as plain props. */
   renderCards: PropsRenderSlots<'alter.card'>['renderSlot']
   /** Live `soulmirror` settings scope for the cards. */
@@ -46,7 +49,7 @@ function dayOf(ts: number): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
-export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: AlterPaneProps) {
+export function AlterPane({ t, onOpenSession, onGoFriend, onGoGroup, renderCards, scope }: AlterPaneProps) {
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   const alter = page.alter
@@ -57,6 +60,7 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
   const scroller = useRef<HTMLDivElement>(null)
   const textarea = useRef<HTMLTextAreaElement>(null)
   const following = useRef(true)
+  const savedScroll = useRef(0)
 
   useEffect(() => {
     if (!alter.loaded && !alter.loading) void pageStore.loadAlter()
@@ -69,13 +73,12 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
     const el = scroller.current
     if (el === null) return
     if (firstPaint.current && items.length > 0) {
-      // Open the transcript from the TOP the first time there is content (read
-      // the conversation from its start), then only follow new messages once the
-      // user is at the bottom — the same shape as a dsh thread. Waiting for the
-      // first non-empty items matters: on mount the transcript is still loading,
-      // and scrolling then would be a no-op (the later load would snap down).
+      // Open the transcript from the BOTTOM (the latest message) the first time
+      // there is content, then keep following new messages once the user is at
+      // the bottom. Waiting for the first non-empty items matters: on mount the
+      // transcript is still loading, and scrolling then would be a no-op.
       firstPaint.current = false
-      el.scrollTop = 0
+      el.scrollTop = el.scrollHeight
       return
     }
     if (following.current) el.scrollTop = el.scrollHeight
@@ -85,7 +88,24 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
     const el = scroller.current
     if (el === null) return
     following.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK
+    savedScroll.current = el.scrollTop
   }
+
+  // The chat thread is unmounted when switching to home/settings and remounted
+  // on return; restore the remembered scroll position so the owner lands where
+  // they left off (first paint still opens at the bottom). The mount run is
+  // skipped so it never overrides the first-paint scroll-to-bottom above.
+  const didMount = useRef(false)
+  useEffect(() => {
+    if (!didMount.current) {
+      didMount.current = true
+      return
+    }
+    if (page.paneTab !== 'chat') return
+    const el = scroller.current
+    if (el === null) return
+    el.scrollTop = savedScroll.current
+  }, [page.paneTab])
 
   const submit = useCallback((text: string): void => {
     if (text.trim() === '') return
@@ -142,15 +162,19 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
           </div>
         )
       case 'inbound': {
-        const name = nameOf(friends, item.fp, item.name)
+        const group = item.gid === undefined ? undefined : net.inbox.groups.find(g => g.gid === item.gid)
+        const name = group !== undefined ? group.name : nameOf(friends, item.fp, item.name)
+        const open = (): void => { if (group !== undefined) onGoGroup(group.gid); else onGoFriend(item.fp) }
         return (
-          <div className="sm-citem sm-wide" data-soulmirror-alter-item="inbound">
-            <div className="sm-inmail" role="button" tabIndex={0} onClick={() => { onGoFriend(item.fp) }} onKeyDown={(e) => { if (e.key === 'Enter') onGoFriend(item.fp) }}>
+          <div className="sm-citem sm-wide" data-soulmirror-alter-item={group !== undefined ? 'group' : 'inbound'}>
+            <div className="sm-inmail" role="button" tabIndex={0} onClick={open} onKeyDown={(e) => { if (e.key === 'Enter') open() }}>
               <div className="sm-inmail-head">
-                <span>{t('alter.item.inbound', { name: '' })}</span><b>{name}</b>
+                {group !== undefined
+                  ? <span>{t('alter.item.groupInbound', { name })}</span>
+                  : <><span>{t('alter.item.inbound', { name: '' })}</span><b>{name}</b></>}
                 <span>· {formatClock(item.ts)}</span>
                 {item.auto ? <span>· {t('bubble.auto')}</span> : null}
-                <span style={{ marginLeft: 'auto' }} className="sm-linkbtn">{t('alter.item.view')}</span>
+                <span style={{ marginLeft: 'auto' }} className="sm-linkbtn">{group !== undefined ? t('alter.item.viewGroup', { name }) : t('alter.item.view')}</span>
               </div>
               <div className="sm-inmail-body">{item.body}</div>
             </div>
@@ -269,7 +293,7 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
         </div>
       </header>
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
-      {paneTab === 'settings' ? alterSettings : paneTab === 'home' ? alterHome : <>
+      {paneTab === 'settings' ? alterSettings : paneTab === 'home' ? alterHome : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true }} scope={{ kind: 'global' }} /> : <>
       {drafts.length > 0 && firstDraft !== undefined
         ? (
           <div className="sm-pendbar" data-soulmirror-alter-pendbar={drafts.length}>
@@ -292,7 +316,7 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
             )
             : null}
           {rows.map(row => <div key={row.key} style={{ display: 'contents' }}>{row.node}</div>)}
-          {drafts.map(d => <DraftCard key={d.id} draft={d} t={t} showTarget onGoFriend={onGoFriend} />)}
+          {drafts.map(d => <DraftCard key={d.id} draft={d} t={t} showTarget onGoFriend={onGoFriend} onGoGroup={onGoGroup} />)}
           {running
             ? (
               <div className="sm-citem sm-alter" data-soulmirror-alter-running>

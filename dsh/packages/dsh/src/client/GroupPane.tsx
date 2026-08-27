@@ -16,6 +16,7 @@ import { api, networkStore, type ApiGroup, type ApiGroupInfo, type ApiGroupProfi
 import { canSpeakAs, DEFAULT_ROOM_KEY, encodeGroupUri, roleOf, roomKeyOf, type GroupRole, type RoomOwnerProps } from './group-room.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { formatAge } from './inbox-state.ts'
+import { MemoryPane } from './MemoryPane.tsx'
 import { tabsFor, type PaneTab } from './page-state.ts'
 import { pageStore } from './page-store.ts'
 import { ChatRoom } from './rooms/ChatRoom.tsx'
@@ -839,6 +840,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
           ),
         })
         : paneTab === 'announce' ? announce
+        : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true, group: gid }} scope={{ kind: 'shared-group', gid }} />
         : paneTab === 'members' ? membersPane
         : paneTab === 'admin' ? admin
         : home}

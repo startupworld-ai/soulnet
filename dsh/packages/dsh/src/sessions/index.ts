@@ -97,6 +97,8 @@ import type { ConversationEntry, Friend, InboundMessage, NetworkClient } from '.
 import { agentPersonaTemplate, PERSONA_NONE, PERSONA_ORDER, PERSONA_SECTION, PERSONA_TEMPLATE, PERSONA_VARIABLES } from '../persona.ts'
 import { DEFAULT_AUTO_REPLY_PER_HOUR, DEFAULT_REPLY_TIER, HourlyWindow, mentionsAgent, mentionsMe, routeInbound, UNKNOWN_TRIGGER, wakeAgentForGroup, wakeForGroup, type DraftReason, type ReplyTier, type TurnTrigger } from '../policy.ts'
 import type { SoulmirrorSettings } from '../settings.ts'
+import { MemoryStore, type AllowScopes, type MemoryKind, type MemoryRecord, type MemoryScope } from '../memory/store.ts'
+import { extractMemories, type MemoryLlm } from '../memory/extract.ts'
 import type {} from '../index.ts'
 
 export interface Config {
@@ -158,6 +160,8 @@ export type SessionsEvent =
   | { readonly kind: 'outbound'; readonly fp: Fingerprint; readonly gid?: string; readonly entry: ConversationEntry }
   /** A pending draft was stored or decided. */
   | { readonly kind: 'draft'; readonly action: 'added' | 'removed'; readonly draft: PendingDraft; readonly decision?: 'approved' | 'rejected' | 'revise' }
+  /** Memory extraction progress for the owner's popup: extracting → extracted(count, memories). */
+  | { readonly kind: 'memory'; readonly phase: 'extracting' | 'extracted'; readonly count: number; readonly memories?: readonly { id: string; content: string }[]; readonly clue?: string }
 
 /** Public face for tools / API / tests. */
 export interface AlterSessions {
@@ -185,6 +189,10 @@ export interface AlterSessions {
   tierStored(fp: Fingerprint): ReplyTier | undefined
   /** Store (or clear with undefined) the reply tier of a friend; answers the effective tier. */
   setTier(fp: Fingerprint, tier: ReplyTier | undefined): Promise<ReplyTier>
+  /** Do-not-disturb flag of a friend (false by default). */
+  friendMuted(fp: Fingerprint): boolean
+  /** Set or clear a friend's do-not-disturb. */
+  setFriendMuted(fp: Fingerprint, muted: boolean): Promise<boolean>
   /** The per-group alter toggle (dsh-groups.json `alter`); default off (quiet by default). */
   groupAlterOn(gid: string): boolean
   /** Flip the per-group alter toggle; answers the stored value. */
@@ -197,6 +205,10 @@ export interface AlterSessions {
    */
   groupVoices(gid: string): GroupSettings
   setGroupVoices(gid: string, patch: GroupSettingsPatch): Promise<GroupSettings>
+  /** Do-not-disturb flag of a group (false by default). */
+  groupMuted(gid: string): boolean
+  /** Set or clear a group's do-not-disturb. */
+  setGroupMuted(gid: string, muted: boolean): Promise<boolean>
   /** Named seat agents of this seat (read side of ../agent-registry.ts). */
   agents(): readonly SeatAgent[]
   /** Create or update one seat agent; its session is (re)shaped in the background. */
@@ -234,6 +246,16 @@ export interface AlterSessions {
   decideDraft(id: string, decision: DraftDecision): Promise<{ draft: PendingDraft; entry?: ConversationEntry }>
   /** fp → legacy (P3) friend session id, for information only. */
   legacyFriendSessions(): Readonly<Record<string, string>>
+  /** Cancel (delete) extracted pre-memories by uid; answers how many were removed. */
+  cancelMemory(ids: readonly string[]): Promise<number>
+  /** All memories visible to one scope (the memory page). */
+  memoryList(allow: AllowScopes): MemoryRecord[]
+  /** Add a memory by hand (origin manual). */
+  memoryAdd(input: { kind: MemoryKind; content: string; scope: MemoryScope }): MemoryRecord
+  /** Edit one memory's content; answers whether it existed. */
+  memoryUpdate(uid: string, content: string, scope?: MemoryScope): boolean
+  /** Delete one memory by uid. */
+  memoryRemove(uid: string): boolean
   /** Publish a live event (the tools plugin reports the entries it archived). */
   emit(event: SessionsEvent): void
   /** Subscribe to live events. */
@@ -387,6 +409,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const draftStore = DraftStore.at(a2aDir)
   const groupSettings = GroupSettingsStore.at(home)
   const agentRegistry = AgentRegistryStore.at(a2aDir)
+  const memoryStore = new MemoryStore(join(a2aDir, 'dsh-memory.db'))
 
   let alterId: SessionId | undefined
   let legacy: Record<string, string> = {}
@@ -605,6 +628,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
       sp.variable(PERSONA_VARIABLES.protocol, () => nonEmpty(protocolFile.read()))
       sp.variable(PERSONA_VARIABLES.drafts, () => draftsLine())
+      sp.variable(PERSONA_VARIABLES.memory, () => {
+        try {
+          const t = trigger()
+          const allow: AllowScopes = t.kind === 'group' && t.gid !== undefined
+            ? { global: true, group: t.gid }
+            : t.fp !== undefined ? { global: true, friend: t.fp } : { global: true }
+          const query = t.kind === 'group' && t.gid !== undefined ? (groupsByGid.get(t.gid)?.name ?? '')
+            : t.fp !== undefined ? (t.name ?? '') : ''
+          const recs = memoryStore.retrieve(allow, query, 8)
+          return recs.length === 0 ? PERSONA_NONE : recs.map(r => `- [${r.kind}] ${r.content}`).join('\n')
+        } catch {
+          return PERSONA_NONE
+        }
+      })
       sp.section({ name: PERSONA_SECTION, order: PERSONA_ORDER, text: PERSONA_TEMPLATE, complete: true })
     } catch (error: unknown) {
       log('warn', `persona registration failed: ${String(error)}`)
@@ -640,6 +677,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         const t = trigger()
         if (t.kind !== 'group' || t.gid === undefined) return PERSONA_NONE
         return nonEmpty(groupsByGid.get(t.gid)?.profile.rules ?? '')
+      })
+      sp.variable(PERSONA_VARIABLES.memory, () => {
+        try {
+          const t = trigger()
+          const query = t.kind === 'group' && t.gid !== undefined ? (groupsByGid.get(t.gid)?.name ?? '') : ''
+          const recs = memoryStore.retrieve({ global: true, agent: seat.name }, query, 8)
+          return recs.length === 0 ? PERSONA_NONE : recs.map(r => `- [${r.kind}] ${r.content}`).join('\n')
+        } catch {
+          return PERSONA_NONE
+        }
       })
       sp.section({ name: PERSONA_SECTION, order: PERSONA_ORDER, text: agentPersonaTemplate(seat.name, seat.cwd ?? a2aDir), complete: true })
     } catch (error: unknown) {
@@ -1374,6 +1421,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       publishAlter()
       return tierOf(fp)
     },
+    friendMuted: (fp) => friendSettings.get(fp).muted === true,
+    setFriendMuted: async (fp, muted) => {
+      await friendSettings.set(fp, { muted })
+      publishAlter()
+      return muted
+    },
     groupAlterOn: gid => groupSettings.alterOn(gid),
     setGroupAlter: async (gid, on) => {
       await groupSettings.set(gid, { alter: on })
@@ -1387,6 +1440,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       announceVoices(gid)
       publishAlter()
       return stored
+    },
+    groupMuted: (gid) => groupSettings.get(gid).muted === true,
+    setGroupMuted: async (gid, muted) => {
+      if (!groupSettings.isLoaded) await groupSettings.load()
+      await groupSettings.set(gid, { muted })
+      publishAlter()
+      return muted
     },
     agents: () => agentRegistry.list(),
     setAgent,
@@ -1407,6 +1467,17 @@ export function apply(ctx: Context, config: Config = {}): void {
     queueDraft,
     decideDraft,
     legacyFriendSessions: () => legacy,
+    cancelMemory: async (ids) => {
+      let removed = 0
+      for (const id of ids) if (memoryStore.remove(id)) removed += 1
+      return removed
+    },
+    memoryList: (allow) => memoryStore.list(allow),
+    memoryAdd: (input) => memoryStore.add({ ...input, sourceCh: 'manual', origin: 'manual' }),
+    memoryUpdate: (uid, content, scope) => {
+      try { return memoryStore.update(uid, content, scope) !== undefined } catch { return false }
+    },
+    memoryRemove: (uid) => memoryStore.remove(uid),
     emit,
     on: (listener) => {
       listeners.add(listener)
@@ -1511,18 +1582,63 @@ export function apply(ctx: Context, config: Config = {}): void {
       const name = agentNameOfSession(sessionId)
       if (name !== undefined) publishAgent(name)
     }
+    const scheduleMemoryExtract = (sessionId: string): void => {
+      setTimeout(() => {
+        if (disposed) return
+        const session = ctx.agents.get(sessionId as SessionId)?.session ?? ctx.sessions.get(sessionId as SessionId)
+        if (session === undefined) return
+        const opts = defaultAgentOptions()
+        if (opts === undefined) { log('warn', 'memory: no default model configured — skipping extraction'); return }
+        const name = agentNameOfSession(sessionId)
+        const trig = triggerOf(session.events)
+        const groupTurn = trig.kind === 'group' && trig.gid !== undefined
+        const scope: MemoryScope = groupTurn
+          ? { kind: 'shared-group', gid: trig.gid! }
+          : name === undefined ? { kind: 'global' } : { kind: 'agent', name }
+        const allow: AllowScopes = groupTurn
+          ? { global: true, group: trig.gid! }
+          : name === undefined ? { global: true } : { global: true, agent: name }
+        const existing = memoryStore.list(allow).map(m => m.content)
+        const chat = chatFromEvents(session.events, { process: false })
+        const lines: string[] = []
+        for (const item of chat.items.slice(-20)) {
+          if (item.kind === 'owner') lines.push('owner: ' + item.text)
+          else if (item.kind === 'alter') lines.push('alter: ' + item.text)
+          else if (item.kind === 'inbound') lines.push(item.name + ': ' + item.body)
+          else if (item.kind === 'send') lines.push('to ' + item.fp + ': ' + item.body)
+        }
+        const summary = lines.join('\n')
+        log('info', 'memory: extracting for ' + scope.kind + (name === undefined ? '' : ':' + name) + ' (' + summary.length + ' chars)')
+        const clue = summary.replace(/\n/g, ' ').trim().slice(0, 24)
+        emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
+        const llm = (ctx as unknown as { get(name: string): unknown }).get('llm') as unknown as MemoryLlm | undefined
+        if (llm === undefined) { log('warn', 'memory: llm service unavailable — skipping extraction'); return }
+        void extractMemories({ llm, provider: opts.provider, model: opts.model, summary, existing, scope })
+          .then((memories) => {
+            const saved = memories.map(m => memoryStore.add(m))
+            if (saved.length > 0) log('info', 'memory: extracted ' + saved.length + ' item(s) -> ' + scope.kind + (name === undefined ? '' : ':' + name))
+            emit({ kind: 'memory', phase: 'extracted', count: saved.length, memories: saved.map(r => ({ id: r.uid, content: r.content })) })
+          })
+          .catch((error: unknown) => {
+            log('warn', 'memory extract failed: ' + String(error))
+            emit({ kind: 'memory', phase: 'extracted', count: 0 })
+          })
+      }, 0)
+    }
+
     // Agent panes also stream the THINKING (reasoning deltas); the alter pane does not.
     const AGENT_EVENT_TYPES = new Set([...ALTER_EVENT_TYPES, 'assistant/chunk', 'reasoning-chunks'])
     ctx.on('session/event', (session, event) => {
       if (disposed) return
       if (alterId !== undefined && session.id === alterId) {
         if (ALTER_EVENT_TYPES.has(event.type)) publishAlter()
+        if (event.type === 'turn/end') scheduleMemoryExtract(session.id)
         return
       }
       if (!AGENT_EVENT_TYPES.has(event.type)) return
       const name = agentNameOfSession(session.id)
       if (name !== undefined) publishAgent(name)
-      if (event.type === 'turn/end') enforceGroupReply(session.id, event)
+      if (event.type === 'turn/end') { enforceGroupReply(session.id, event); scheduleMemoryExtract(session.id) }
     })
     const agentGroupOfSession = (sessionId: string): { name: string; gid: string } | undefined => {
       for (const [name, byGid] of agentGroupSessionIds) {

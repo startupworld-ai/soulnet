@@ -39,6 +39,7 @@ import { api } from './api.ts'
 import type {} from './group-room.ts'
 import type {} from './alter-card.ts'
 import { AlterSettingsCard } from './AlterSettingsCard.tsx'
+import { setDirectoryPicker } from './dir-picker.ts'
 import { InboxOverlay, type InboxOverlayInjected } from './InboxOverlay.tsx'
 import { en, NS, zh } from './locales.ts'
 import { ChatRoom } from './rooms/ChatRoom.tsx'
@@ -62,7 +63,7 @@ export { DEFAULT_ROOM_KEY, roomKeyOf } from './group-room.ts'
 
 const SETTINGS_NAMESPACE = 'soulmirror'
 
-export const inject = ['slots', 'locale', 'conversationEvents', 'sessions', 'settingsScope', 'commandUi', 'theme']
+export const inject = ['slots', 'locale', 'conversationEvents', 'sessions', 'settingsScope', 'commandUi', 'theme', 'workspaces']
 
 /** Whether a session cwd is the SoulMirror workspace (`<home>/a2a`, e.g. `~/.soulnet/a2a`). */
 export function isSoulmirrorCwd(cwd: string | undefined): boolean {
@@ -74,6 +75,7 @@ export function isSoulmirrorCwd(cwd: string | undefined): boolean {
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'soulmirror: dictionaries')
   const t = ctx.locale.bind(NS)
+  setDirectoryPicker(() => ctx.workspaces.pickDirectory())
   ctx.effect(() => {
     ensureStyles()
     return removeStyles

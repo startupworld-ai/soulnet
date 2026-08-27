@@ -26,7 +26,7 @@ import { FriendPane } from './FriendPane.tsx'
 import type {} from './group-room.ts'
 import { GroupPane } from './GroupPane.tsx'
 import type { NS } from './locales.ts'
-import { agentOf, ALTER_KEY, gidOf, resolveSelection } from './page-state.ts'
+import { agentOf, ALTER_KEY, gidOf, groupKey, resolveSelection } from './page-state.ts'
 import { pageStore } from './page-store.ts'
 import type { SoulmirrorSettingsValues } from './SettingsSection.tsx'
 
@@ -131,10 +131,23 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
       if (target === null) return
       if (rootEl.contains(target)) return
       if ((target as Element | null)?.closest?.('[data-soulmirror-footer]') != null) return
+      // A modal (agent sheet, group agents sheet, add-friend / join / create
+      // dialogs) closes itself on mousedown and detaches its target before this
+      // document listener runs — the click is still page content, never a
+      // "return to dsh" click.
+      if ((target as Element | null)?.closest?.('[data-soulmirror-modal]') != null) return
       // The @-mention box removes itself on mousedown (before this document
       // listener runs), so its target is already detached from root — but it is
       // still page content and must never close the page.
       if ((target as Element | null)?.closest?.('[data-soulmirror-mention-pop]') != null) return
+      // Any floating surface that belongs to the page (memory popup, toasts,
+      // future cards) lives outside the page root in the overlay layer; a click
+      // there is page content, not "clicking dsh's sidebar". Every such surface
+      // opts in by carrying this one attribute — no per-popup exclusions.
+      if ((target as Element | null)?.closest?.('[data-soulmirror-float]') != null) return
+      // The whole overlay layer (every shell.overlay entry: this page, the
+      // memory popup, future cards) is page surface, never "dsh's sidebar".
+      if ((target as Element | null)?.closest?.('[data-shell-overlay]') != null) return
       pageStore.close()
     }
     document.addEventListener('mousedown', onDown)
@@ -161,6 +174,7 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
 
   const goAlter = (): void => { pageStore.select(ALTER_KEY) }
   const goFriend = (fp: string): void => { pageStore.select(fp) }
+  const goGroup = (gid: string): void => { pageStore.select(groupKey(gid)) }
   const openContact = (fp: string): void => {
     pageStore.select(fp)
     pageStore.setPaneTab('home')
@@ -186,7 +200,7 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
           ? <GroupPane t={t} group={group} visible={page.open} onGoAlter={goAlter} renderRoom={renderSlot} />
           : seatAgent !== undefined
             ? <AgentPane t={t} agent={seatAgent} onOpenSession={openAlterSession} onRemoved={goAlter} />
-            : <AlterPane t={t} onOpenSession={openAlterSession} onGoFriend={goFriend} renderCards={renderSlot} scope={scope} />}
+            : <AlterPane t={t} onOpenSession={openAlterSession} onGoFriend={goFriend} onGoGroup={goGroup} renderCards={renderSlot} scope={scope} />}
     </div>
   )
 }

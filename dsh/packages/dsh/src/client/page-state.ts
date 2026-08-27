@@ -263,7 +263,7 @@ export function resolveSelection(friends: readonly Pick<InboxFriend, 'fp'>[], gr
 export type Col2Tab = 'messages' | 'contacts'
 
 /** Which panel of the third column (content area) is active. */
-export type PaneTab = 'chat' | 'announce' | 'home' | 'members' | 'admin' | 'info' | 'settings'
+export type PaneTab = 'chat' | 'announce' | 'home' | 'members' | 'admin' | 'info' | 'settings' | 'memory'
 
 /** The kind of the current selection, for tab availability. */
 export type SelectionKind = 'alter' | 'friend' | 'group' | 'agent'
@@ -279,15 +279,14 @@ export function kindOf(selected: string | undefined): SelectionKind {
  * The tab set the third column offers for a selection. `admin` (group
  * management) is group-owner/admin only; the rest follow the product's rows:
  * a friend has chat + home, a group has chat / announce / home / members
- * (+ admin). `agent` adds a lightweight `info` tab. Extra modules (group
- * memory, per-agent memory) slot in here later.
+ * (+ admin), the alter and every agent have a memory page.
  */
 export function tabsFor(kind: SelectionKind, canAdmin: boolean): PaneTab[] {
   switch (kind) {
-    case 'alter': return ['chat', 'home', 'settings']
+    case 'alter': return ['chat', 'home', 'memory', 'settings']
     case 'friend': return ['chat', 'home']
-    case 'group': return canAdmin ? ['chat', 'announce', 'home', 'members', 'admin'] : ['chat', 'announce', 'home', 'members']
-    case 'agent': return ['chat', 'info']
+    case 'group': return canAdmin ? ['chat', 'announce', 'home', 'memory', 'members', 'admin'] : ['chat', 'announce', 'home', 'memory', 'members']
+    case 'agent': return ['chat', 'memory', 'info']
   }
 }
 

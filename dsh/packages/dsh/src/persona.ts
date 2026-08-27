@@ -49,6 +49,8 @@ export const PERSONA_VARIABLES = {
   drafts: 'soulmirror_pending_drafts',
   /** The owner's brief of one seat agent (its free-text persona / standing instructions; live). */
   agentBrief: 'soulmirror_agent_brief',
+  /** Retrieved long-term memory for this turn (scope-filtered top-K; live). */
+  memory: 'soulmirror_memory',
 } as const
 
 const v = (name: string): string => `{{${name}}}`
@@ -86,6 +88,10 @@ export const PERSONA_TEMPLATE = [
   `Group that woke this turn: ${v(PERSONA_VARIABLES.triggerGroup)} (gid ${v(PERSONA_VARIABLES.triggerGid)}); "none" means no group message woke you.`,
   `Rules of that group (its constitution — obey them alongside the protocol): ${v(PERSONA_VARIABLES.triggerGroupRules)}`,
   `Drafts awaiting your owner's review: ${v(PERSONA_VARIABLES.drafts)}`,
+  '',
+  '# Memory',
+  `Long-term memory relevant to this turn (facts, preferences and decisions the owner told you before; "(none)" = nothing retrieved):`,
+  v(PERSONA_VARIABLES.memory),
   '',
   '# Diplomacy protocol (global)',
   v(PERSONA_VARIABLES.protocol),
@@ -126,6 +132,10 @@ export function agentPersonaTemplate(name: string, cwd: string): string {
     '',
     '# Groups (roster)',
     v(PERSONA_VARIABLES.groups),
+    '',
+    '# Memory',
+    `Long-term memory relevant to this turn ("(none)" = nothing retrieved):`,
+    v(PERSONA_VARIABLES.memory),
     '',
     '# This turn',
     `Group that woke this turn: ${v(PERSONA_VARIABLES.triggerGroup)} (gid ${v(PERSONA_VARIABLES.triggerGid)}); "none" means your owner spoke to you directly.`,

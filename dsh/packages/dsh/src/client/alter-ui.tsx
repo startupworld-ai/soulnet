@@ -51,12 +51,13 @@ export function TierSelect({ value, defaultTier, onChange, t, disabled, id }: {
 }
 
 /** Per-friend alter settings: reply tier + protocol override (friend pane, above the action bar). */
-export function FriendSettingsPanel({ fp, name, tier, tierExplicit, protocol, defaultTier, perHour, t, onClose }: {
+export function FriendSettingsPanel({ fp, name, tier, tierExplicit, protocol, muted, defaultTier, perHour, t, onClose }: {
   fp: string
   name: string
   tier: ReplyTier | undefined
   tierExplicit: boolean
   protocol: string | undefined
+  muted: boolean
   defaultTier: ReplyTier
   perHour: number
   t: Translate
@@ -67,7 +68,7 @@ export function FriendSettingsPanel({ fp, name, tier, tierExplicit, protocol, de
   const [note, setNote] = useState<{ kind: 'ok' | 'error'; text: string } | undefined>(undefined)
   useEffect(() => { setDraft(protocol ?? '') }, [fp, protocol])
 
-  const save = async (patch: { tier?: ReplyTier | ''; protocol?: string }): Promise<void> => {
+  const save = async (patch: { tier?: ReplyTier | ''; protocol?: string; muted?: boolean }): Promise<void> => {
     setBusy(true)
     setNote(undefined)
     try {
@@ -91,6 +92,10 @@ export function FriendSettingsPanel({ fp, name, tier, tierExplicit, protocol, de
         <span>{t('friend.tier')}</span>
         <TierSelect value={tierExplicit ? tier : undefined} defaultTier={defaultTier} disabled={busy} t={t} onChange={(next) => { void save({ tier: next ?? '' }) }} />
         <span>{t('friend.tier.hint', { n: perHour })}</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, flexDirection: 'row' }}>
+        <input type="checkbox" checked={muted} disabled={busy} onChange={(e) => { void save({ muted: e.target.checked }) }} data-soulmirror-friend-mute />
+        <span>{t('friend.mute')}</span>
       </label>
       <label>
         <span>{t('friend.protocol')}</span>

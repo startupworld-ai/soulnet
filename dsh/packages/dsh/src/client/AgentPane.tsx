@@ -12,6 +12,7 @@ import { Button, IconRightUpOutline14, IconSendOutline16, IconSettingsOutline16,
 import { api, networkStore, type ApiChatItem, type ApiHistory, type ApiSeatAgent } from './api.ts'
 import { AgentSettingsSheet } from './AgentSettingsSheet.tsx'
 import { ContentTabs } from './ContentTabs.tsx'
+import { MemoryPane } from './MemoryPane.tsx'
 import { ProcessItemView } from './process-ui.tsx'
 import { formatClock, formatDay, tabsFor, type PaneTab } from './page-state.ts'
 import { pageStore } from './page-store.ts'
@@ -270,7 +271,7 @@ export function AgentPane({ t, agent, onOpenSession, onRemoved }: AgentPaneProps
         </div>
       </header>
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
-      {paneTab === 'info' ? agentInfo : <>
+      {paneTab === 'info' ? agentInfo : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true, agent: name }} scope={{ kind: 'agent', name }} /> : <>
       <div ref={scroller} className="sm-thread" onScroll={onScroll} data-soulmirror-agent-thread>
         <div className="sm-thread-inner">
           {history === undefined && error === undefined ? <span className="sm-muted" style={{ alignSelf: 'center', fontSize: 12 }}>{t('page.thread.loading')}</span> : null}

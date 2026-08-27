@@ -129,6 +129,11 @@ function ChatRow({ row, typing, apps, selected, t, onSelect }: {
           {row.kind === 'friend'
             ? <span className={`sm-presence${row.f.online === true ? ' sm-online' : ''}`} title={row.f.online === true ? t('inbox.online') : t('inbox.offline')} />
             : <span className="sm-gmark" aria-hidden title={t('group.section')}><GroupMarkIcon /></span>}
+          {row.kind === 'friend' && row.f.unread > 0 && row.f.muted !== true
+            ? <span className="sm-badge" data-soulmirror-row-unread={row.f.unread}>{row.f.unread}</span>
+            : row.kind === 'group' && row.g.unread > 0 && row.g.muted !== true
+              ? <span className="sm-dot" data-soulmirror-row-unread={row.g.unread} title={t('sidebar.unread', { n: row.g.unread })} />
+              : null}
           {apps > 0 ? <span className="sm-badge sm-badge-warn" data-soulmirror-group-row-apps={apps}>{apps}</span> : null}
         </span>
         <span className="sm-row-body">
@@ -232,9 +237,6 @@ export function FriendList({ t, selected, onSelect, onSelectContact, onAccepted,
     const nb = b.kind === 'friend' ? b.f.name : b.g.name
     return na.localeCompare(nb)
   })
-  // Split the combined rows by the second-column tab.
-  const friendRows = rows.filter((r): r is Extract<ChatRowData, { kind: 'friend' }> => r.kind === 'friend')
-  const groupRows = rows.filter((r): r is Extract<ChatRowData, { kind: 'group' }> => r.kind === 'group')
   // Address book (通讯录): all friends, alphabetical, filtered by the search query.
   const contactRows = filterFriends(inbox.friends, query).sort((a, b) => a.name.localeCompare(b.name))
   // Seat agents collapse to AGENT_COLLAPSE until the owner expands them.
@@ -559,17 +561,22 @@ export function FriendList({ t, selected, onSelect, onSelectContact, onAccepted,
               ? <AgentSettingsSheet t={t} onClose={() => { setAgentSheetOpen(false) }} onSaved={(name) => { onSelect(agentKey(name)) }} />
               : null}
 
-            <div className="sm-section">{t('groups.section')}</div>
-            {groupRows.length === 0
-              ? <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>{q !== '' ? t('page.empty.noMatch', { query }) : t('col2.groups.empty')}</p>
+            {/* One unified chat list (WeChat-style): friends and groups mixed, newest first; the group marker glyph tells them apart at a glance. */}
+            <div className="sm-section">{t('messages.section')}</div>
+            {rows.length === 0
+              ? (
+                <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>
+                  {identity === null ? t('page.empty.noFriends.noIdentity') : t('chats.empty')}
+                </p>
+              )
               : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-groups>
-                  {groupRows.map(r => (
+                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-chats>
+                  {rows.map(r => (
                     <ChatRow
                       key={r.rowKey}
                       row={r}
-                      typing={false}
-                      apps={inbox.groupApps[r.g.gid] ?? 0}
+                      typing={r.kind === 'friend' && (inbox.typing[r.f.fp] === true || r.f.typing === true)}
+                      apps={r.kind === 'group' ? (inbox.groupApps[r.g.gid] ?? 0) : 0}
                       selected={selected === r.rowKey}
                       t={t}
                       onSelect={() => { onSelect(r.rowKey) }}
@@ -588,29 +595,6 @@ export function FriendList({ t, selected, onSelect, onSelectContact, onAccepted,
                 />
               )
               : null}
-
-            <div className="sm-section">{t('messages.friends')}</div>
-            {friendRows.length === 0
-              ? (
-                <p className="sm-muted" style={{ margin: 0, padding: '4px 10px 10px', fontSize: 12 }} data-soulmirror-page-empty-list>
-                  {identity === null ? t('page.empty.noFriends.noIdentity') : q !== '' ? t('page.empty.noMatch', { query }) : t('chats.empty')}
-                </p>
-              )
-              : (
-                <ul style={{ listStyle: 'none', margin: 0, padding: 0 }} data-soulmirror-page-friends data-soulmirror-page-chats>
-                  {friendRows.map(r => (
-                    <ChatRow
-                      key={r.rowKey}
-                      row={r}
-                      typing={inbox.typing[r.f.fp] === true || r.f.typing === true}
-                      apps={0}
-                      selected={selected === r.rowKey}
-                      t={t}
-                      onSelect={() => { onSelect(r.rowKey) }}
-                    />
-                  ))}
-                </ul>
-              )}
           </>
         )}
 

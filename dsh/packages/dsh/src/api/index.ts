@@ -106,6 +106,17 @@ const num = (value: unknown): number | undefined => {
   if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value)
   return undefined
 }
+/** Parse a memory scope from the wire: { kind, name?/fp?/gid? }. */
+const memoryScope = (value: unknown): { kind: 'global' } | { kind: 'agent'; name: string } | { kind: 'shared-friend'; fp: string } | { kind: 'shared-group'; gid: string } | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const v = value as Record<string, unknown>
+  const kind = text(v['kind'])
+  if (kind === 'global') return { kind: 'global' }
+  if (kind === 'agent') { const name = text(v['name']); return name === undefined ? undefined : { kind: 'agent', name } }
+  if (kind === 'shared-friend') { const fp = text(v['fp']); return fp === undefined ? undefined : { kind: 'shared-friend', fp } }
+  if (kind === 'shared-group') { const gid = text(v['gid']); return gid === undefined ? undefined : { kind: 'shared-group', gid } }
+  return undefined
+}
 /** `fps` as a JSON array (POST) or a comma-separated query value (GET). */
 const fpList = (value: unknown): string[] => {
   if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string' && v !== '')
@@ -162,7 +173,8 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
     const tier = sessions?.tierOf(fp) ?? options.settings().defaultTier
     const explicit = sessions?.tierStored(fp) !== undefined
     const drafts = sessions?.drafts.count(fp) ?? 0
-    return { ...friend, tier, ...(explicit ? { tierExplicit: true } : {}), ...(drafts > 0 ? { drafts } : {}) }
+    const muted = sessions?.friendMuted(fp) === true
+    return { ...friend, tier, ...(explicit ? { tierExplicit: true } : {}), ...(drafts > 0 ? { drafts } : {}), ...(muted ? { muted: true } : {}) }
   }
 
   const state = async (): Promise<Json> => {
@@ -183,7 +195,10 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
           client.groups.list().catch(() => [] as const),
         ])
         pending = [...p]
-        groups = [...g]
+        groups = g.map(grp => {
+          const muted = sessions?.groupMuted(grp.gid) === true
+          return muted ? { ...grp, muted: true } : grp
+        })
         // `friends.list` carries no presence; ask the peer (cached 10 s there) so
         // every row has `online` and the page header / dots are authoritative.
         let online: Record<string, boolean> = {}
@@ -283,6 +298,9 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
         }
         if (tierValue !== undefined && sessions !== undefined) {
           await sessions.setTier(fp as Fingerprint, isReplyTier(tierValue) ? tierValue : undefined)
+        }
+        if ((body['muted'] === true || body['muted'] === false) && sessions !== undefined) {
+          await sessions.setFriendMuted(fp as Fingerprint, body['muted'] === true)
         }
         options.log('info', `friends.set ${fp}: ${[note !== undefined ? 'note' : '', protocolOverride !== undefined ? 'protocol' : '', tierValue !== undefined ? `tier=${String(tierValue)}` : ''].filter(s => s !== '').join(' ')}`)
         return { status: 200, body: { friend: friendRow(friend as unknown as Record<string, unknown>, sessions) } }
@@ -433,6 +451,62 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
         if (removed) options.log('info', `seat agent removed: "${name}" (its dsh session stays until deleted there)`)
         return { status: 200, body: { ok: true, removed } }
       }
+      case 'memory.cancel': {
+        const sessions = options.sessions()
+        if (sessions === undefined) return { status: 503, body: { error: { code: -32603, message: 'sessions plugin not mounted' } } }
+        const ids = Array.isArray(body['ids']) ? body['ids'].filter((x): x is string => typeof x === 'string') : []
+        if (ids.length === 0) return bad('ids must name at least one memory')
+        const removed = await sessions.cancelMemory(ids)
+        options.log('info', `memory cancelled: ${removed}/${ids.length} removed`)
+        return { status: 200, body: { ok: true, removed } }
+      }
+      case 'memory.list': {
+        const sessions = options.sessions()
+        if (sessions === undefined) return { status: 503, body: { error: { code: -32603, message: 'sessions plugin not mounted' } } }
+        const allow = {
+          ...(body['global'] === true ? { global: true } : {}),
+          ...(typeof body['agent'] === 'string' && body['agent'] !== '' ? { agent: body['agent'] } : {}),
+          ...(typeof body['friend'] === 'string' && body['friend'] !== '' ? { friend: body['friend'] } : {}),
+          ...(typeof body['group'] === 'string' && body['group'] !== '' ? { group: body['group'] } : {}),
+        }
+        return { status: 200, body: { memories: sessions.memoryList(allow) } }
+      }
+      case 'memory.add': {
+        const sessions = options.sessions()
+        if (sessions === undefined) return { status: 503, body: { error: { code: -32603, message: 'sessions plugin not mounted' } } }
+        const kind = text(body['kind']) ?? 'fact'
+        const content = text(body['content'])
+        if (content === undefined || content.trim() === '') return bad('content must not be empty')
+        const scope = memoryScope(body['scope'])
+        if (scope === undefined) return bad('scope must be global | agent | shared-friend | shared-group')
+        try {
+          const record = sessions.memoryAdd({ kind: kind as never, content, scope })
+          return { status: 200, body: { memory: record } }
+        } catch (e: unknown) {
+          return bad(e instanceof Error ? e.message : String(e))
+        }
+      }
+      case 'memory.update': {
+        const sessions = options.sessions()
+        if (sessions === undefined) return { status: 503, body: { error: { code: -32603, message: 'sessions plugin not mounted' } } }
+        const uid = text(body['uid'])
+        const content = text(body['content'])
+        if (uid === undefined || content === undefined || content.trim() === '') return bad('uid and content required')
+        // Optional scope: moving a memory between global / agent / group while editing.
+        let scope: ReturnType<typeof memoryScope>
+        if (body['scope'] !== undefined) {
+          scope = memoryScope(body['scope'])
+          if (scope === undefined) return bad('scope must be global | agent | shared-friend | shared-group')
+        }
+        return { status: 200, body: { ok: sessions.memoryUpdate(uid, content, scope) } }
+      }
+      case 'memory.remove': {
+        const sessions = options.sessions()
+        if (sessions === undefined) return { status: 503, body: { error: { code: -32603, message: 'sessions plugin not mounted' } } }
+        const uid = text(body['uid'])
+        if (uid === undefined) return bad('uid required')
+        return { status: 200, body: { ok: sessions.memoryRemove(uid) } }
+      }
       case 'group.create': {
         const name = text(body['name'])
         if (name === undefined) return bad('name must not be empty')
@@ -577,16 +651,18 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
             }
           : undefined
         const duty = body['duty'] === null || body['duty'] === '' ? null : typeof body['duty'] === 'string' ? body['duty'] : undefined
+        const muted = body['muted'] === true || body['muted'] === false ? body['muted'] === true : undefined
         // Single-writer rule: go through the sessions plugin's store when it is
         // mounted (its in-memory copy is what the routing reads); this route's
         // own store is only the fallback for a sessions-less composition.
         const sessions = options.sessions()
-        if (method === 'POST' && (body['alter'] !== undefined || mode !== undefined || voice !== undefined || duty !== undefined)) {
+        if (method === 'POST' && (body['alter'] !== undefined || mode !== undefined || voice !== undefined || duty !== undefined || muted !== undefined)) {
           const patch = {
             ...(body['alter'] === undefined ? {} : { alter: body['alter'] === true || body['alter'] === 'true' }),
             ...(mode === undefined ? {} : { mode }),
             ...(voice === undefined ? {} : { voice }),
             ...(duty === undefined ? {} : { duty }),
+            ...(muted === undefined ? {} : { muted }),
           }
           const settings = sessions !== undefined ? await sessions.setGroupVoices(gid, patch) : await groupSettings.set(gid, patch)
           options.log('info', `group ${gid}: voices [${Object.keys(settings.voices ?? {}).join(', ')}]${settings.duty === undefined ? '' : ` · duty ${settings.duty}`}`)

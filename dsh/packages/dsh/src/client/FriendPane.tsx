@@ -214,6 +214,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
               tier={friend.tier}
               tierExplicit={friend.tierExplicit === true}
               protocol={friend.protocol}
+              muted={friend.muted === true}
               defaultTier={alterConfig?.defaultTier ?? 'draft'}
               perHour={alterConfig?.autoReplyPerHour ?? 20}
               t={t}
@@ -317,6 +318,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
             tier={friend.tier}
             tierExplicit={friend.tierExplicit === true}
             protocol={friend.protocol}
+            muted={friend.muted === true}
             defaultTier={alterConfig?.defaultTier ?? 'draft'}
             perHour={alterConfig?.autoReplyPerHour ?? 20}
             t={t}

@@ -10,6 +10,7 @@
  */
 import { useState, type CSSProperties } from 'react'
 import { api, networkStore, type ApiSeatAgent } from './api.ts'
+import { pickDirectory } from './dir-picker.ts'
 import type { Translate } from './translate.ts'
 
 const field: CSSProperties = { font: 'inherit', padding: '6px 8px', borderRadius: 6, border: '1px solid rgba(127,127,127,.35)', background: 'transparent', color: 'inherit', width: '100%', boxSizing: 'border-box' }
@@ -78,7 +79,19 @@ export function AgentSettingsSheet({ t, agent, onClose, onSaved, onRemoved }: {
         </label>
         <label style={{ display: 'grid', gap: 4, fontSize: '0.85em' }}>
           <span style={{ opacity: 0.8 }}>{t('settings.agents.cwd')}</span>
-          <input style={field} value={cwd} onChange={e => { setCwd(e.target.value) }} data-soulmirror-agent-cwd />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input style={{ ...field, flex: 1, minWidth: 0 }} value={cwd} onChange={e => { setCwd(e.target.value) }} data-soulmirror-agent-cwd />
+            <button
+              type="button"
+              className="sm-ghostbtn"
+              style={{ whiteSpace: 'nowrap' }}
+              disabled={busy}
+              onClick={() => { void pickDirectory().then(p => { if (p !== null) setCwd(p) }) }}
+              data-soulmirror-agent-cwd-browse
+            >
+              {t('settings.agents.cwd.browse')}
+            </button>
+          </div>
         </label>
         <label style={{ display: 'grid', gap: 4, fontSize: '0.85em' }}>
           <span style={{ opacity: 0.8 }}>{t('settings.agents.preset')}</span>
