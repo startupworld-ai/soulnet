@@ -406,6 +406,14 @@ func TestRemoveFriendKeepsArchive(t *testing.T) {
 	if _, err := a.Send(context.Background(), b.Fingerprint(), "after", ""); err != nil {
 		t.Fatal(err)
 	}
+	// Give "after" time to arrive and be dropped BEFORE re-adding a below. AddFriend
+	// stores the card immediately (re-friending a), which would otherwise archive the
+	// still-in-flight "after" and fail this check.
+	time.Sleep(500 * time.Millisecond)
+	if got := b.Conversation(a.Fingerprint(), 1, 0); len(got) != 0 {
+		t.Fatalf("mail from a non-friend must be dropped, got %+v", got)
+	}
+
 	// a new friend request from b gets pended on a's side only after b re-adds; here just
 	// check b re-adding a works (a already has b, so a's Add updates the card snapshot).
 	ac, _ := a.Card()
@@ -415,10 +423,6 @@ func TestRemoveFriendKeepsArchive(t *testing.T) {
 	req := a.await(t, "friend.request", kindIs(EventFriendRequest))
 	if req.Peer != b.Fingerprint() {
 		t.Fatalf("request peer: %+v", req)
-	}
-	time.Sleep(200 * time.Millisecond) // give "after" time to arrive (it must be dropped)
-	if got := b.Conversation(a.Fingerprint(), 1, 0); len(got) != 0 {
-		t.Fatalf("mail from a non-friend must be dropped, got %+v", got)
 	}
 }
 
