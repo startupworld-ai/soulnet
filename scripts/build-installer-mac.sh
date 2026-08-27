@@ -143,46 +143,48 @@ rm -rf "$STAGE/pkg"
 PLUGIN_SHA="$(shasum -a 256 "$TARBALLS"/soulnet-dsh-[0-9]*.tgz | cut -c1-16)"
 printf '%s %s\n' "$VERSION" "$PLUGIN_SHA" > "$WEB/.soulmirror-template-version"
 
-# ---------------------------------------------------------------- [7] .app
-echo "-- [7/7] SoulMirror.app + .dmg"
-APP="$STAGE/SoulMirror.app"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp installer/mac/launcher.sh "$APP/Contents/MacOS/launcher"
-chmod +x "$APP/Contents/MacOS/launcher"
-# Portable Node runtimes + the dsh app + home-template live under Resources.
+# ---------------------------------------------------- [7] Electron .app + .dmg
+echo "-- [7/7] Electron .app + .dmg (x64 + arm64)"
+ELECTRON_VERSION="${ELECTRON_VERSION:-33.2.0}"
+mkdir -p "$STAGE/desktop-pkg"
+cat > "$STAGE/desktop-pkg/package.json" <<EOF
+{ "name": "smdsh-desktop-deps", "private": true,
+  "dependencies": { "electron": "$ELECTRON_VERSION", "@electron/packager": "^18.3.6" } }
+EOF
+( cd "$STAGE/desktop-pkg" && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install --no-audit --no-fund )
+
+PACKAGER="$STAGE/desktop-pkg/node_modules/.bin/electron-packager"
+"$PACKAGER" "$ROOT/desktop/app" "SoulMirror" \
+  --electron-version "$ELECTRON_VERSION" \
+  --platform darwin --arch x64,arm64 \
+  --out "$STAGE" --overwrite \
+  --app-version "$VERSION" \
+  --app-bundle-id "cn.startupworld.soulmirror-dsh" \
+  --app-copyright "StartupWorld" \
+  --prune false
+
+# The dsh CLI + portable Node + home-template live next to the packaged app.
 for arch in x64 arm64; do
+  APP="$STAGE/SoulMirror-darwin-$arch/SoulMirror.app"
+  [[ -d "$APP" ]] || { echo "error: $APP missing" >&2; exit 1; }
   NODE_TGZ="$CACHE/node-v$NODE_VERSION-darwin-$arch.tar.gz"
   mkdir -p "$APP/Contents/Resources/node-$arch-unzip"
   tar -xzf "$NODE_TGZ" -C "$APP/Contents/Resources/node-$arch-unzip" --strip-components=1
   mv "$APP/Contents/Resources/node-$arch-unzip" "$APP/Contents/Resources/node-$arch"
+  cp -R "$STAGE/app" "$APP/Contents/Resources/app"
+  cp -R "$STAGE/home-template" "$APP/Contents/Resources/home-template"
 done
-mv "$STAGE/app" "$APP/Contents/Resources/app"
-mv "$STAGE/home-template" "$APP/Contents/Resources/home-template"
-cat > "$APP/Contents/Info.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>SoulMirror</string>
-  <key>CFBundleDisplayName</key><string>SoulMirror</string>
-  <key>CFBundleIdentifier</key><string>cn.startupworld.soulmirror-dsh</string>
-  <key>CFBundleVersion</key><string>$VERSION</string>
-  <key>CFBundleShortVersionString</key><string>$VERSION</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>launcher</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-EOF
 
 if [[ "${SKIP_DMG:-0}" == "1" ]]; then
   echo "-- SKIP_DMG=1: staged at $STAGE, no .dmg compiled"
   exit 0
 fi
 mkdir -p "$DIST"
-DMG="$DIST/SoulMirror-DSH-$VERSION.dmg"
-rm -f "$DMG"
-hdiutil create -volname "SoulMirror" -srcfolder "$APP" -ov -format UDZO "$DMG"
-[[ -f "$DMG" ]] || { echo "error: expected $DMG" >&2; exit 1; }
-echo "== done: $DMG ($(du -h "$DMG" | cut -f1))"
+for arch in x64 arm64; do
+  APP="$STAGE/SoulMirror-darwin-$arch/SoulMirror.app"
+  DMG="$DIST/SoulMirror-DSH-$VERSION-$arch.dmg"
+  rm -f "$DMG"
+  hdiutil create -volname "SoulMirror" -srcfolder "$APP" -ov -format UDZO "$DMG"
+  [[ -f "$DMG" ]] || { echo "error: expected $DMG" >&2; exit 1; }
+  echo "== done: $DMG ($(du -h "$DMG" | cut -f1))"
+done
