@@ -9,13 +9,14 @@
  * turn). The native dsh session holds the same log ("Open in dsh").
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Button, IconRightUpOutline14, IconSendOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconSendOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, networkStore, type ApiChatItem } from './api.ts'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import type { AlterCardOwnerProps } from './alter-card.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { DraftCard } from './DraftCard.tsx'
+import { MemoryPane } from './MemoryPane.tsx'
 import type { SoulmirrorSettingsValues } from './SettingsSection.tsx'
 import type { Translate } from './translate.ts'
 import { formatClock, formatDay, tabsFor, type PaneTab } from './page-state.ts'
@@ -24,10 +25,10 @@ import { SoulMirrorIcon } from './SidebarEntry.tsx'
 
 export interface AlterPaneProps {
   t: Translate
-  /** Open the alter's dsh session (closes the page). */
-  onOpenSession: (sessionId: string) => void
   /** Jump to a friend's read-only thread. */
   onGoFriend: (fp: string) => void
+  /** Jump to a group's chat (from a group message relayed into the alter). */
+  onGoGroup: (gid: string) => void
   /** The page's `alter.card` render authorization, handed down as plain props. */
   renderCards: PropsRenderSlots<'alter.card'>['renderSlot']
   /** Live `soulmirror` settings scope for the cards. */
@@ -46,7 +47,7 @@ function dayOf(ts: number): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
-export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: AlterPaneProps) {
+export function AlterPane({ t, onGoFriend, onGoGroup, renderCards, scope }: AlterPaneProps) {
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   const alter = page.alter
@@ -83,13 +84,12 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
     const el = scroller.current
     if (el === null) return
     if (firstPaint.current && items.length > 0) {
-      // Open the transcript from the TOP the first time there is content (read
-      // the conversation from its start), then only follow new messages once the
-      // user is at the bottom — the same shape as a dsh thread. Waiting for the
-      // first non-empty items matters: on mount the transcript is still loading,
-      // and scrolling then would be a no-op (the later load would snap down).
+      // Open the transcript from the BOTTOM (the latest message) the first time
+      // there is content, then keep following new messages once the user is at
+      // the bottom. Waiting for the first non-empty items matters: on mount the
+      // transcript is still loading, and scrolling then would be a no-op.
       firstPaint.current = false
-      el.scrollTop = 0
+      el.scrollTop = el.scrollHeight
       return
     }
     if (following.current) el.scrollTop = el.scrollHeight
@@ -170,15 +170,19 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
           </div>
         )
       case 'inbound': {
-        const name = nameOf(friends, item.fp, item.name)
+        const group = item.gid === undefined ? undefined : net.inbox.groups.find(g => g.gid === item.gid)
+        const name = group !== undefined ? group.name : nameOf(friends, item.fp, item.name)
+        const open = (): void => { if (group !== undefined) onGoGroup(group.gid); else onGoFriend(item.fp) }
         return (
-          <div className="sm-citem sm-wide" data-soulmirror-alter-item="inbound">
-            <div className="sm-inmail" role="button" tabIndex={0} onClick={() => { onGoFriend(item.fp) }} onKeyDown={(e) => { if (e.key === 'Enter') onGoFriend(item.fp) }}>
+          <div className="sm-citem sm-wide" data-soulmirror-alter-item={group !== undefined ? 'group' : 'inbound'}>
+            <div className="sm-inmail" role="button" tabIndex={0} onClick={open} onKeyDown={(e) => { if (e.key === 'Enter') open() }}>
               <div className="sm-inmail-head">
-                <span>{t('alter.item.inbound', { name: '' })}</span><b>{name}</b>
+                {group !== undefined
+                  ? <span>{t('alter.item.groupInbound', { name })}</span>
+                  : <><span>{t('alter.item.inbound', { name: '' })}</span><b>{name}</b></>}
                 <span>· {formatClock(item.ts)}</span>
                 {item.auto ? <span>· {t('bubble.auto')}</span> : null}
-                <span style={{ marginLeft: 'auto' }} className="sm-linkbtn">{t('alter.item.view')}</span>
+                <span style={{ marginLeft: 'auto' }} className="sm-linkbtn">{group !== undefined ? t('alter.item.viewGroup', { name }) : t('alter.item.view')}</span>
               </div>
               <div className="sm-inmail-body">{item.body}</div>
             </div>
@@ -266,16 +270,6 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
           <div className="sm-home-line"><span className="sm-home-line-key">{t('alter.home.defaultTier')}</span><span className="sm-home-line-val">{t(`tier.short.${net.state?.alter?.defaultTier ?? 'draft'}`)}</span></div>
           <div className="sm-home-line"><span className="sm-home-line-key">{t('alter.home.perHour')}</span><span className="sm-home-line-val">{net.state?.alter?.autoReplyPerHour ?? 20}</span></div>
         </div>
-        {alter.sessionId !== undefined
-          ? (
-            <div className="sm-home-card">
-              <div className="sm-home-title"><span>{t('alter.home.actions')}</span></div>
-              <button type="button" className="sm-ghostbtn" onClick={() => { onOpenSession(alter.sessionId!) }} data-soulmirror-alter-open-dsh>
-                <IconRightUpOutline14 size={14} /> {t('alter.openDsh')}
-              </button>
-            </div>
-          )
-          : null}
       </div>
     </div>
   )
@@ -284,7 +278,6 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
   const cardProps: AlterCardOwnerProps = {
     alter: { sessionId: alter.sessionId, status: alter.status },
     scope,
-    openSession: () => { if (alter.sessionId !== undefined) onOpenSession(alter.sessionId) },
   }
   const alterSettings = (
     <div className="sm-home" data-soulmirror-alter-settings>
@@ -305,17 +298,6 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
             {alter.sessionId === undefined ? t('alter.status.noSession') : running ? t('alter.status.running') : t('alter.status.idle')}
           </div>
         </div>
-        <div className="sm-chat-head-actions">
-          {alter.sessionId !== undefined
-            ? (
-              <Tooltip label={t('alter.openDsh.hint')} side="bottom">
-                <button type="button" className="sm-ghostbtn" onClick={() => { onOpenSession(alter.sessionId!) }} data-soulmirror-alter-open-dsh>
-                  <IconRightUpOutline14 size={14} /> {t('alter.openDsh')}
-                </button>
-              </Tooltip>
-            )
-            : null}
-        </div>
       </header>
       {wallet !== undefined && wallet !== null
         ? (
@@ -331,8 +313,7 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
         : null}
 
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
-      {paneTab === 'settings' ? alterSettings : paneTab === 'home' ? alterHome : <>
-
+      {paneTab === 'settings' ? alterSettings : paneTab === 'home' ? alterHome : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true }} scope={{ kind: 'global' }} /> : <>
       {drafts.length > 0 && firstDraft !== undefined
         ? (
           <div className="sm-pendbar" data-soulmirror-alter-pendbar={drafts.length}>
@@ -355,7 +336,7 @@ export function AlterPane({ t, onOpenSession, onGoFriend, renderCards, scope }: 
             )
             : null}
           {rows.map(row => <div key={row.key} style={{ display: 'contents' }}>{row.node}</div>)}
-          {drafts.map(d => <DraftCard key={d.id} draft={d} t={t} showTarget onGoFriend={onGoFriend} />)}
+          {drafts.map(d => <DraftCard key={d.id} draft={d} t={t} showTarget onGoFriend={onGoFriend} onGoGroup={onGoGroup} />)}
           {running
             ? (
               <div className="sm-citem sm-alter" data-soulmirror-alter-running>

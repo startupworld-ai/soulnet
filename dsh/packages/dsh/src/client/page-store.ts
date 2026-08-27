@@ -33,7 +33,7 @@ export interface PageSnapshot {
   readonly open: boolean
   /** Selection: `ALTER_KEY` or a friend fingerprint (may point at a friend that is gone; the page resolves it). */
   readonly selected: string | undefined
-  /** Which section the second column shows. */
+  /** Which section the second column (the list) shows. */
   readonly col2Tab: Col2Tab
   /** Which panel of the third column (content area) is active. */
   readonly paneTab: PaneTab
@@ -57,8 +57,8 @@ const PAGE_STORAGE_KEY = 'soulmirror.page'
 /** Debounce of the localStorage write (bursts of selection / tab changes). */
 const PERSIST_MS = 250
 
-const PANE_TABS: readonly PaneTab[] = ['chat', 'announce', 'home', 'members', 'admin', 'info', 'settings']
-const COL2_TABS: readonly Col2Tab[] = ['contacts', 'agents', 'groups']
+const PANE_TABS: readonly PaneTab[] = ['chat', 'announce', 'home', 'members', 'admin', 'info', 'memory', 'settings']
+const COL2_TABS: readonly Col2Tab[] = ['messages', 'contacts']
 
 /**
  * A persisted `paneTab` only makes sense for the selection it was saved under:
@@ -75,7 +75,7 @@ function clampPaneTab(tab: unknown, selected: string | undefined): PaneTab {
 
 /** The navigation state we persist, guarded for non-browser envs (unit tests run under node). */
 function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab' | 'paneTab'> {
-  const fallback = { open: false, selected: undefined, col2Tab: 'contacts' as Col2Tab, paneTab: DEFAULT_PANE_TAB as PaneTab }
+  const fallback = { open: false, selected: undefined, col2Tab: 'messages' as Col2Tab, paneTab: DEFAULT_PANE_TAB as PaneTab }
   try {
     if (typeof localStorage === 'undefined') return fallback
     const raw = localStorage.getItem(PAGE_STORAGE_KEY)
@@ -85,7 +85,7 @@ function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab'
     return {
       open: p.open === true,
       selected,
-      col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'contacts',
+      col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'messages',
       paneTab: clampPaneTab(p.paneTab, selected),
     }
   } catch {
@@ -263,7 +263,7 @@ export class PageStore {
     this.prime(selection)
   }
 
-  /** Switch the second-column section (contacts / agents / groups). */
+  /** Switch the second-column section (messages / contacts). */
   setCol2Tab = (tab: Col2Tab): void => { if (tab !== this.snapshot.col2Tab) this.set({ col2Tab: tab }) }
 
   /** Switch the third-column panel (chat / announce / home / members / admin / info). */

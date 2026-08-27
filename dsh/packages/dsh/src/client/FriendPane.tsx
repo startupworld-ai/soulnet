@@ -16,6 +16,7 @@ import { FriendSettingsPanel } from './alter-ui.tsx'
 import { api, networkStore } from './api.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { DraftCard } from './DraftCard.tsx'
+import { MemoryPane } from './MemoryPane.tsx'
 import type { Translate } from './translate.ts'
 import { draftsFor, formatAge, type InboxFriend } from './inbox-state.ts'
 import { formatClock, formatDay, tabsFor, type PaneTab, withDaySeparators, type ThreadEntry, type ThreadState } from './page-state.ts'
@@ -219,7 +220,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
             <button type="button" className="sm-ghostbtn" onClick={() => { setCardOpen(v => !v) }}><IconUserOutline16 size={14} /> {t('page.header.card')}</button>
             <button type="button" className="sm-ghostbtn" onClick={() => { pageStore.setPaneTab('chat'); setCardOpen(true) }}><IconCopyOutline16 size={14} /> {t('page.header.card.copy')}</button>
             <button type="button" className="sm-ghostbtn" aria-expanded={settingsOpen} onClick={() => { setSettingsOpen(v => !v) }}>{t('friend.actbar.settings')}</button>
-            <Button variant="primary" size="sm" onClick={onGoAlter}>{t('friend.actbar.goAlter')}</Button>
+            <Button variant="primary" size="sm" onClick={onGoAlter}>{t('friend.home.sendMessage')}</Button>
           </div>
         </div>
         {settingsOpen
@@ -230,6 +231,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
               tier={friend.tier}
               tierExplicit={friend.tierExplicit === true}
               protocol={friend.protocol}
+              muted={friend.muted === true}
               defaultTier={alterConfig?.defaultTier ?? 'draft'}
               perHour={alterConfig?.autoReplyPerHour ?? 20}
               t={t}
@@ -263,7 +265,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
         </div>
       </header>
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
-      {paneTab === 'home' ? friendHome : <>
+      {paneTab === 'home' ? friendHome : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true, friend: fp }} scope={{ kind: 'shared-friend', fp }} /> : <>
       <div className="sm-banner" role="note" data-soulmirror-readonly-banner>
         <span>{t('friend.banner.prefix')}<b>{t('friend.banner.mine')}</b>{t('friend.banner.middle')}<b>{t('friend.banner.theirs', { name: friend.name })}</b>{t('friend.banner.suffix')}</span>
         <button type="button" className="sm-ghostbtn" onClick={onGoAlter} data-soulmirror-banner-go>{t('friend.banner.go')}</button>
@@ -333,6 +335,7 @@ export function FriendPane({ t, friend, visible, onGoAlter, directSend }: Friend
             tier={friend.tier}
             tierExplicit={friend.tierExplicit === true}
             protocol={friend.protocol}
+            muted={friend.muted === true}
             defaultTier={alterConfig?.defaultTier ?? 'draft'}
             perHour={alterConfig?.autoReplyPerHour ?? 20}
             t={t}

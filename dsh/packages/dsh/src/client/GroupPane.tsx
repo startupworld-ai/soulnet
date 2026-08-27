@@ -17,6 +17,7 @@ import { canSpeakAs, DEFAULT_ROOM_KEY, encodeGroupUri, roleOf, roomKeyOf, type G
 import { paidJoinFromRules, rulesWithoutPaidJoin } from '../group-contract.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { formatAge } from './inbox-state.ts'
+import { MemoryPane } from './MemoryPane.tsx'
 import { tabsFor, type PaneTab } from './page-state.ts'
 import { pageStore } from './page-store.ts'
 import { ChatRoom } from './rooms/ChatRoom.tsx'
@@ -24,6 +25,9 @@ import type { Translate } from './translate.ts'
 
 /** Roster info survives pane switches, so revisiting a group paints names instantly. */
 const infoCache = new Map<string, ApiGroupInfo>()
+
+/** 很久没来群（未读 >= 此阈值）进群时，触发一次群记忆提炼（避免每条消息都总结）。 */
+const GROUP_MEMORY_MIN_UNREAD = 20
 
 export interface GroupPaneProps {
   t: Translate
@@ -130,6 +134,13 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
     void networkStore.markReadGroup(gid)
   }, [gid, unread, visible, thread.entries.length])
+
+  // 埋点：很久没来群（未读多）进群时，触发一次最近消息的记忆提炼。
+  useEffect(() => {
+    if (group.unread < GROUP_MEMORY_MIN_UNREAD) return
+    void api.memorySummarize(gid).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gid])
 
   const run = async (key: string, action: () => Promise<void>): Promise<void> => {
     setBusy(key)
@@ -275,7 +286,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
             {role === 'owner' && !editOpen
               ? <button type="button" className="sm-ghostbtn" onClick={openEditor} data-soulmirror-group-profile-edit>{t('group.home.edit')}</button>
               : null}
-            {profile?.public === true && relay !== undefined
+            {relay !== undefined
               ? (
                 <button type="button" className="sm-ghostbtn" onClick={copyUri} data-soulmirror-group-uri-copy>
                   {copied ? <IconCheckOutline14 size={14} /> : <IconCopyOutline16 size={14} />} {copied ? t('group.home.uri.copied') : t('group.home.uri.copy')}
@@ -747,7 +758,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
         <div className="sm-home-card">
           <div className="sm-home-title">
             <span>{t('group.home.profile')}</span>
-            {profile?.public === true && relay !== undefined
+            {relay !== undefined
               ? (
                 <button type="button" className="sm-ghostbtn" onClick={copyUri} data-soulmirror-group-uri-copy>
                   {copied ? <IconCheckOutline14 size={14} /> : <IconCopyOutline16 size={14} />} {copied ? t('group.home.uri.copied') : t('group.home.uri.copy')}
@@ -880,6 +891,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
           ),
         })
         : paneTab === 'announce' ? announce
+        : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true, group: gid }} scope={{ kind: 'shared-group', gid }} />
         : paneTab === 'members' ? membersPane
         : paneTab === 'admin' ? admin
         : home}

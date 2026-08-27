@@ -1,17 +1,17 @@
 /**
  * `shell.overlay` entry `soulmirror-inbox`: the new-mail cue — a ui-primitives
  * Toast "New message from <name>" for mail whose session is not the one on
- * screen and whose thread is not open on the SoulMirror page. Always mounted
- * (the overlay layer is click-through until an entry renders something), so
- * the SSE stream is kept open by the store subscription here and the footer
- * badge updates live even while the page is closed. The P2 inbox popover
- * that used to live here was replaced by the full page (./SoulmirrorPage.tsx).
+ * screen and whose thread is not open on the SoulMirror page. The memory
+ * extraction popup lives in ./MemoryNotification.tsx (mounted here so the SSE
+ * stream stays open for its own subscription too). Always mounted (the overlay
+ * layer is click-through until an entry renders something).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { networkStore } from './api.ts'
 import { shouldNotify, type MailNotice } from './inbox-state.ts'
 import type { NS } from './locales.ts'
+import { MemoryNotification } from './MemoryNotification.tsx'
 import { groupKey } from './page-state.ts'
 import { pageStore } from './page-store.ts'
 import { SoulMirrorIcon } from './SidebarEntry.tsx'
@@ -38,6 +38,12 @@ export function InboxOverlay({ currentSessionId, t }: InboxOverlayProps) {
     // conversation (fp is the sender there), a DM to the friend thread.
     const threadKey = notice.gid !== undefined ? groupKey(notice.gid) : notice.fp
     if (page.open && page.selected === threadKey) return
+    // do-not-disturb: muted friend / muted group
+    const inbox = networkStore.getSnapshot().inbox
+    const muted = notice.gid !== undefined
+      ? inbox.groups.find(g => g.gid === notice.gid)?.muted === true
+      : inbox.friends.find(f => f.fp === notice.fp)?.muted === true
+    if (muted) return
     if (!shouldNotify(notice, currentSessionId())) return
     seq.current += 1
     const entry: ToastEntry = { ...notice, key: seq.current }
@@ -47,6 +53,7 @@ export function InboxOverlay({ currentSessionId, t }: InboxOverlayProps) {
 
   return (
     <>
+      <MemoryNotification t={t} />
       {toasts.map(toast => (
         <MailToast key={toast.key} entry={toast} t={t} onDone={() => { dismiss(toast.key) }} />
       ))}

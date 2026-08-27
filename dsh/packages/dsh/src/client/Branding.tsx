@@ -59,7 +59,7 @@ const DISCORD_TOKENS: Record<string, { light: string; dark: string }> = {
   '--dsw-alias-label-primary': { light: '#0f1115', dark: '#dbdee1' },
   '--dsw-alias-label-secondary': { light: '#61666b', dark: '#b5bac1' },
   '--dsw-alias-label-tertiary': { light: '#81858c', dark: '#949ba4' },
-  '--dsw-alias-label-primary-inverted': { light: '#ffffff', dark: '#ffffff' },
+  '--dsw-alias-label-primary-inverted': { light: '#ffffff', dark: '#0f1115' },
   '--dsw-alias-brand-primary': { light: '#0f1115', dark: '#5865f2' },
   '--dsw-alias-button-primary-hover': { light: '#43454a', dark: '#4752c4' },
   '--dsw-alias-interactive-bg-hover': { light: '#2631480f', dark: '#4e505859' },

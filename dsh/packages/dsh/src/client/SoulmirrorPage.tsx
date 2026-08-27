@@ -26,13 +26,11 @@ import { FriendPane } from './FriendPane.tsx'
 import type {} from './group-room.ts'
 import { GroupPane } from './GroupPane.tsx'
 import type { NS } from './locales.ts'
-import { agentOf, ALTER_KEY, gidOf, resolveSelection } from './page-state.ts'
+import { agentOf, ALTER_KEY, gidOf, groupKey, resolveSelection } from './page-state.ts'
 import { pageStore } from './page-store.ts'
 import type { SoulmirrorSettingsValues } from './SettingsSection.tsx'
 
 export interface SoulmirrorPageInjected {
-  /** Select a session as current (ctx.sessions.open). */
-  openSession: (sessionId: string) => void
   /** Bound settings scope of the `soulmirror` namespace (the page reads the debug `directSend` toggle live). */
   scope: SettingsScope<SoulmirrorSettingsValues>
 }
@@ -62,7 +60,7 @@ function sidebarColumnOf(pageRoot: HTMLElement | null): { column: HTMLElement; f
   return undefined
 }
 
-export function SoulmirrorPage({ openSession, scope, t, renderSlot }: SoulmirrorPageProps) {
+export function SoulmirrorPage({ scope, t, renderSlot }: SoulmirrorPageProps) {
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   const subscribeScope = useCallback((listener: () => void) => scope.subscribe(listener), [scope])
@@ -135,6 +133,23 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
       if (!target.isConnected) return
       if (rootEl.contains(target)) return
       if ((target as Element | null)?.closest?.('[data-soulmirror-footer]') != null) return
+      // A modal (agent sheet, group agents sheet, add-friend / join / create
+      // dialogs) closes itself on mousedown and detaches its target before this
+      // document listener runs — the click is still page content, never a
+      // "return to dsh" click.
+      if ((target as Element | null)?.closest?.('[data-soulmirror-modal]') != null) return
+      // The @-mention box removes itself on mousedown (before this document
+      // listener runs), so its target is already detached from root — but it is
+      // still page content and must never close the page.
+      if ((target as Element | null)?.closest?.('[data-soulmirror-mention-pop]') != null) return
+      // Any floating surface that belongs to the page (memory popup, toasts,
+      // future cards) lives outside the page root in the overlay layer; a click
+      // there is page content, not "clicking dsh's sidebar". Every such surface
+      // opts in by carrying this one attribute — no per-popup exclusions.
+      if ((target as Element | null)?.closest?.('[data-soulmirror-float]') != null) return
+      // The whole overlay layer (every shell.overlay entry: this page, the
+      // memory popup, future cards) is page surface, never "dsh's sidebar".
+      if ((target as Element | null)?.closest?.('[data-shell-overlay]') != null) return
       pageStore.close()
     }
     document.addEventListener('mousedown', onDown)
@@ -161,9 +176,10 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
 
   const goAlter = (): void => { pageStore.select(ALTER_KEY) }
   const goFriend = (fp: string): void => { pageStore.select(fp) }
-  const openAlterSession = (sessionId: string): void => {
-    openSession(sessionId)
-    pageStore.close()
+  const goGroup = (gid: string): void => { pageStore.select(groupKey(gid)) }
+  const openContact = (fp: string): void => {
+    pageStore.select(fp)
+    pageStore.setPaneTab('home')
   }
 
   return (
@@ -172,6 +188,7 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
         t={t}
         selected={selected}
         onSelect={(key) => { pageStore.select(key) }}
+        onSelectContact={openContact}
         onAccepted={(fp) => { pageStore.select(fp) }}
         onClose={() => { pageStore.close() }}
       />
@@ -180,8 +197,8 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
         : group !== undefined
           ? <GroupPane t={t} group={group} visible={page.open} onGoAlter={goAlter} renderRoom={renderSlot} />
           : seatAgent !== undefined
-            ? <AgentPane t={t} agent={seatAgent} onOpenSession={openAlterSession} onRemoved={goAlter} />
-            : <AlterPane t={t} onOpenSession={openAlterSession} onGoFriend={goFriend} renderCards={renderSlot} scope={scope} />}
+            ? <AgentPane t={t} agent={seatAgent} onRemoved={goAlter} />
+            : <AlterPane t={t} onGoFriend={goFriend} onGoGroup={goGroup} renderCards={renderSlot} scope={scope} />}
     </div>
   )
 }

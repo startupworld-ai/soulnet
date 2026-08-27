@@ -54,6 +54,7 @@ import type { SoulmirrorSettings } from '../settings.ts'
 import { defineTool } from './define.ts'
 import type {} from '../index.ts'
 import type { AlterSessions } from '../sessions/index.ts'
+import type { MemoryKind, MemoryScope } from '../memory/store.ts'
 
 export const name = 'soulmirror-tools'
 export const inject = ['tools', 'soulmirror']
@@ -397,6 +398,41 @@ export function apply(ctx: Context): void {
     },
   })
 
+  const remember = defineTool({
+    name: 'soulmirror_remember',
+    description: 'Save one long-term memory the user just told you — a fact about them, a preference, a decision, or a promise. Call this whenever the user says something worth keeping for later (in the language they used). Do NOT claim you remembered something without actually calling this tool.',
+    parameters: {
+      content: { type: 'string', description: 'One concrete, self-contained sentence (in the user\'s language) capturing what to remember.' },
+      kind: { type: 'string', description: 'fact | preference | decision | promise | summary (default fact).', optional: true },
+    },
+    output: { type: 'object' },
+    async execute(args, exec) {
+      const face = seams.sessions()
+      if (face === undefined || exec.agent === undefined) {
+        return { ok: false, message: 'memory store is unavailable in this session.' }
+      }
+      const content = args.content.trim()
+      if (content === '') return { ok: false, message: 'content must not be empty.' }
+      const voice = face.voiceOf(exec.agent.id)
+      const trigger = face.triggerOf(exec.agent.id)
+      // 归属：alter → global；seat agent 群会话 → shared-group:<gid>；seat agent 直聊 → agent:<name>。
+      let scope: MemoryScope
+      if (voice?.kind === 'agent') {
+        scope = trigger.kind === 'group' && trigger.gid !== undefined
+          ? { kind: 'shared-group', gid: trigger.gid }
+          : { kind: 'agent', name: voice.agent.name }
+      } else {
+        scope = { kind: 'global' }
+      }
+      const kinds: MemoryKind[] = ['fact', 'preference', 'decision', 'promise', 'summary']
+      const kind: MemoryKind = kinds.includes(args.kind as MemoryKind) ? args.kind as MemoryKind : 'fact'
+      const record = face.memoryRemember({ kind, content, scope })
+      face.emit({ kind: 'memory', phase: 'extracted', count: 1, memories: [{ id: record.uid, content: record.content }] })
+      ctx.logger.info(`soulmirror-tools: remembered -> ${scope.kind} : ${content}`)
+      return { ok: true, id: record.uid, scope: scope.kind, content: record.content }
+    },
+  })
+
   const wallet = defineTool({
     name: 'soulmirror_wallet',
     description: 'Manage the user\'s USDC wallet (Coinbase CDP, Base network) through the local payment gateway. op "get_or_create" creates or returns the wallet address (free, moves no money; the address is public and anyone can send USDC to it), op "balance" returns the USDC/ETH balance, op "status" returns the gateway/wallet state, op "bind" binds an EXISTING wallet instead of creating a new one — either the user\'s own external 0x address (address param, manual-address mode: can receive USDC, cannot send from this gateway) or an existing CDP account by name (account_name param). When the gateway is not configured with CDP, the result explains how to enable it. This tool NEVER sends money.',
@@ -644,6 +680,6 @@ export function apply(ctx: Context): void {
     },
   })
 
-  for (const tool of [friends, card, addFriend, sendMessage, sendGroup, readConversation, wallet, transfer, group]) ctx.tools.register(tool)
-  ctx.logger.info('soulmirror-tools: registered soulmirror_friends, soulmirror_card, soulmirror_add_friend, soulmirror_send_message, soulmirror_send_group_message, soulmirror_read_conversation, soulmirror_wallet, soulmirror_transfer, soulmirror_group')
+  for (const tool of [friends, card, addFriend, sendMessage, sendGroup, readConversation, remember, wallet, transfer, group]) ctx.tools.register(tool)
+  ctx.logger.info('soulmirror-tools: registered soulmirror_friends, soulmirror_card, soulmirror_add_friend, soulmirror_send_message, soulmirror_send_group_message, soulmirror_read_conversation, soulmirror_remember, soulmirror_wallet, soulmirror_transfer, soulmirror_group')
 }

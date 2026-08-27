@@ -1,0 +1,7 @@
+{
+  "name": "soulmirror-desktop",
+  "version": "0.1.2",
+  "private": true,
+  "main": "main.js",
+  "description": "SoulMirror desktop shell: starts the dsh web server and shows it in a native window."
+}

@@ -10,7 +10,7 @@
  * with one quiet bar, and when agents may speak a per-group "my alter
  * participates" switch reads/writes the `group.settings` alter flag.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Button, IconSendOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { api, networkStore, type ApiChatItem } from '../api.ts'
@@ -18,7 +18,7 @@ import { GroupAgentsSheet } from '../GroupAgentsSheet.tsx'
 import { ProcessItemView, type ProcessItem } from '../process-ui.tsx'
 import type { RoomOwnerProps } from '../group-room.ts'
 import type { NS } from '../locales.ts'
-import { formatClock, formatDay, groupKey, type ThreadEntry } from '../page-state.ts'
+import { ALTER_KEY, formatClock, formatDay, groupKey, type ThreadEntry } from '../page-state.ts'
 import { pageStore } from '../page-store.ts'
 import { buildTimeline, type TimelineRow } from './timeline.ts'
 import type { Translate } from '../translate.ts'
@@ -114,6 +114,7 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
   const [voices, setVoices] = useState<Record<string, boolean> | undefined>(undefined)
   const [voiceCommanders, setVoiceCommanders] = useState<Record<string, string[]>>({})
   const [duty, setDuty] = useState<string>('')
+  const [muted, setMuted] = useState<boolean>(group.muted === true)
   const [agentNames, setAgentNames] = useState<string[]>([])
   const [agentsSheetOpen, setAgentsSheetOpen] = useState(false)
   const [mention, setMention] = useState<{ start: number; query: string } | undefined>(undefined)
@@ -128,6 +129,9 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
   const following = useRef(true)
   const prevFirstSeq = useRef<number | undefined>(undefined)
   const prevHeight = useRef(0)
+  // The alter's pending drafts for THIS group (a reply is waiting for review).
+  const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
+  const groupDrafts = net.inbox.drafts.filter(d => d.gid === gid)
 
   // Switching groups: reset the composer and follow the tail again.
   useEffect(() => {
@@ -191,7 +195,7 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
   // The per-group "my alter participates" switch (client setting, group.settings).
   const profile = group.profile
   const showAlterChip = profile?.speakAgents === true
-  const applySettings = (settings: { voices?: Record<string, { on: true; commanders?: string[] }>; duty?: string }): void => {
+  const applySettings = (settings: { voices?: Record<string, { on: true; commanders?: string[] }>; duty?: string; muted?: boolean }): void => {
     const map: Record<string, boolean> = {}
     const cmds: Record<string, string[]> = {}
     for (const [name, v] of Object.entries(settings.voices ?? {})) {
@@ -201,6 +205,7 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
     setVoices(map)
     setVoiceCommanders(cmds)
     setDuty(settings.duty ?? '')
+    if (settings.muted !== undefined) setMuted(settings.muted === true)
   }
   useEffect(() => {
     if (!showAlterChip) return
@@ -227,6 +232,12 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
     const prev = duty
     setDuty(value)
     api.groupSettingsSet(gid, { duty: value === '' ? null : value }).then(({ settings }) => { applySettings(settings) }).catch(() => { setDuty(prev) })
+  }
+  const toggleMuted = (): void => {
+    const prev = muted
+    const next = !muted
+    setMuted(next)
+    api.groupSettingsSet(gid, { muted: next }).then(({ settings }) => { applySettings(settings) }).catch(() => { setMuted(prev) })
   }
   /** Load one of MY agents' work-session trace for this group (local; persists in the timeline). */
   const loadFeed = (name: string): void => {
@@ -443,6 +454,14 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
           ))}
         </div>
       </div>
+      {groupDrafts.length > 0
+        ? (
+          <div className="sm-pendbar" data-soulmirror-group-draft-reminder>
+            <span>{t('group.draftReminder')}</span>
+            <button type="button" className="sm-linkbtn" onClick={() => { pageStore.select(ALTER_KEY) }}>{t('group.draftReminder.go')}</button>
+          </div>
+        )
+        : null}
       {mutedHint !== undefined
         ? (
           // Humans cannot post here: one quiet bar instead of a dead composer.
@@ -453,6 +472,14 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
         )
         : (
           <div className="sm-composer" data-soulmirror-group-composer>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '0 16px 6px' }}>
+              <label className={`sm-switch${muted ? ' sm-on' : ''}`} data-soulmirror-group-mute>
+                <input type="checkbox" checked={muted} onChange={toggleMuted} />
+                <span className="sm-switch-track" aria-hidden />
+                {t('group.mute')}
+              </label>
+              {alterSwitch}
+            </div>
             <div className="sm-composer-box">
               <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
                 {mention !== undefined && mentionMatches.length > 0
@@ -506,7 +533,6 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
             </div>
             <span className="sm-composer-hint" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ flex: 1 }}>{t('group.composer.hint')}</span>
-              {alterSwitch}
             </span>
           </div>
         )}

@@ -25,13 +25,15 @@ export function reasonLabel(t: Translate, reason: string): string {
   }
 }
 
-export function DraftCard({ draft, t, showTarget, onGoFriend }: {
+export function DraftCard({ draft, t, showTarget, onGoFriend, onGoGroup }: {
   draft: ApiDraft
   t: Translate
   /** Name the target in the head (the alter chat lists drafts to every friend). */
   showTarget?: boolean
   /** Jump to the friend's read-only thread. */
   onGoFriend?: (fp: string) => void
+  /** Jump to the group's chat (group drafts). */
+  onGoGroup?: (gid: string) => void
 }) {
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const busy = page.deciding.includes(draft.id)
@@ -39,14 +41,15 @@ export function DraftCard({ draft, t, showTarget, onGoFriend }: {
   const [text, setText] = useState(draft.body)
   const [feedback, setFeedback] = useState('')
   const inReplyTo = draft.trigger?.kind === 'inbound' ? (draft.trigger.name ?? draft.name) : undefined
+  const openTarget = draft.gid !== undefined && onGoGroup !== undefined ? () => { onGoGroup(draft.gid!) } : onGoFriend !== undefined ? () => { onGoFriend(draft.fp) } : undefined
 
   return (
     <div className="sm-draft" data-soulmirror-draft={draft.id} data-soulmirror-draft-fp={draft.fp}>
       <div className="sm-draft-head">
         <span className="sm-draft-tag">{t('draft.tag')}</span>
         <span>{showTarget === true ? t('draft.title.to', { name: draft.name }) : t('draft.title')}</span>
-        {showTarget === true && onGoFriend !== undefined
-          ? <button type="button" className="sm-linkbtn" onClick={() => { onGoFriend(draft.fp) }}>{t('draft.openThread')}</button>
+        {showTarget === true && openTarget !== undefined
+          ? <button type="button" className="sm-linkbtn" onClick={openTarget}>{draft.gid !== undefined ? t('draft.openGroup') : t('draft.openThread')}</button>
           : null}
         <span className="sm-row-time">{formatAge(Date.parse(draft.createdAt))}</span>
       </div>

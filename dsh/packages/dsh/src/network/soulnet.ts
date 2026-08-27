@@ -706,7 +706,13 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
     }
     proc.stderr?.setEncoding('utf8')
     proc.stderr?.on('data', (chunk: string) => {
-      for (const line of chunk.split(/\r?\n/)) if (line.trim() !== '') log('info', `[soulnet] ${line.trim()}`)
+      for (const line of chunk.split(/\r?\n/)) {
+        if (line.trim() === '') continue
+        log('info', `[soulnet] ${line.trim()}`)
+        // DEBUG: mirror the peer's stderr (its logf) to a file so the
+        // [recv-debug]/[grp-debug] trace is visible while the GUI is up.
+        try { appendFileSync(join(options.home, 'peer-debug.log'), `${line.trim()}\n`) } catch { /* best effort */ }
+      }
     })
     const ep = new JsonRpcEndpoint(proc.stdout, proc.stdin, {
       timeoutMs: requestTimeoutMs,

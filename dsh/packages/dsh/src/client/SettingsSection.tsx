@@ -41,8 +41,6 @@ export interface SoulmirrorSettingsValues {
 }
 
 export interface SoulmirrorSettingsInjected {
-  /** Select a session as current (ctx.sessions.open) — used for "Open the alter session in dsh". */
-  openSession: (id: string) => void
   /** Bound settings scope of the `soulmirror` namespace. */
   scope: SettingsScope<SoulmirrorSettingsValues>
 }
@@ -240,7 +238,7 @@ function binarySourceLabel(t: SoulmirrorSettingsProps['t'], source: string): str
   return key === undefined ? source : t(key)
 }
 
-export function SoulmirrorSettingsSection({ openSession, scope, t }: SoulmirrorSettingsProps) {
+export function SoulmirrorSettingsSection({ scope, t }: SoulmirrorSettingsProps) {
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   // The scope is a class instance (methods need `this`): wrap instead of passing them unbound.
   const subscribeScope = useCallback((listener: () => void) => scope.subscribe(listener), [scope])
@@ -345,7 +343,6 @@ export function SoulmirrorSettingsSection({ openSession, scope, t }: SoulmirrorS
         <p style={small}>{t('settings.alter.intro')}</p>
         <div style={rowStyle}>
           <button type="button" onClick={() => { pageStore.open('alter') }} data-soulmirror-settings-open-page>{t('settings.alter.openPage')}</button>
-          {state?.alter?.sessionId != null ? <button type="button" onClick={() => { openSession(state.alter!.sessionId!) }} data-soulmirror-settings-open-alter-session>{t('settings.alter.openSession')}</button> : null}
           {state?.alter?.legacyFriendSessions !== undefined && Object.keys(state.alter.legacyFriendSessions).length > 0
             ? <span style={small}>{t('settings.alter.legacy', { n: Object.keys(state.alter.legacyFriendSessions).length })}</span>
             : null}

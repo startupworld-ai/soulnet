@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -129,9 +130,12 @@ func (s *Server) deliver(env *a2a.Envelope) error {
 		return err
 	}
 	raw, _ := json.Marshal(env)
-	if err := os.WriteFile(filepath.Join(dir, inboxFileName()), raw, 0o644); err != nil {
+	name := inboxFileName()
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0o644); err != nil {
+		log.Printf("[relay-debug] deliver FAIL to=%s gid=%s file=%s err=%v", a2a.ShortFp(env.To), a2a.ShortFp(env.GID), name, err)
 		return err
 	}
+	log.Printf("[relay-debug] deliver OK to=%s gid=%s file=%s bytes=%d", a2a.ShortFp(env.To), a2a.ShortFp(env.GID), name, len(raw))
 	s.wkMu.Lock()
 	if ch, ok := s.wakeup[env.To]; ok {
 		close(ch)
@@ -298,6 +302,7 @@ func (s *Server) getMail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(items) > 0 || wait <= 0 || time.Now().After(deadline) {
+			log.Printf("[relay-debug] getMail box=%s wait=%d items=%d", a2a.ShortFp(box), wait, len(items))
 			WriteJSON(w, 200, map[string]any{"messages": items})
 			return
 		}
@@ -382,5 +387,6 @@ func (s *Server) ackMail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.emit(Event{Kind: EventMailAcked, FP: body.Box, Data: map[string]any{"removed": n}})
+	log.Printf("[relay-debug] ackMail box=%s requested=%d removed=%d", a2a.ShortFp(body.Box), len(body.AckIDs), n)
 	WriteJSON(w, 200, map[string]any{"ok": true, "removed": n})
 }

@@ -22,6 +22,8 @@ export const PROTOCOL_FILE = 'protocol.md'
 
 export interface FriendSettings {
   readonly tier?: ReplyTier
+  /** Do-not-disturb: mute the unread badge / new-mail toast for this friend. */
+  readonly muted?: boolean
 }
 
 interface FriendSettingsFile {
@@ -45,7 +47,10 @@ export class FriendSettingsStore {
       const friends: Record<string, FriendSettings> = {}
       for (const [fp, value] of Object.entries(raw.friends ?? {})) {
         const v = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>
-        friends[fp] = { ...(v['tier'] === undefined ? {} : { tier: normalizeTier(v['tier']) }) }
+        friends[fp] = {
+          ...(v['tier'] === undefined ? {} : { tier: normalizeTier(v['tier']) }),
+          ...(v['muted'] === true ? { muted: true } : {}),
+        }
       }
       this.data = { friends }
     } catch {
@@ -73,11 +78,13 @@ export class FriendSettingsStore {
   }
 
   /** Patch one friend's settings; an explicit `tier: undefined` clears the stored tier (back to the global default). */
-  async set(fp: string, patch: { tier?: ReplyTier | undefined }): Promise<FriendSettings> {
+  async set(fp: string, patch: { tier?: ReplyTier | undefined; muted?: boolean }): Promise<FriendSettings> {
     const current = this.get(fp)
     const tier = 'tier' in patch ? patch.tier : current.tier
-    if (tier === undefined) delete this.data.friends[fp]
-    else this.data.friends[fp] = { ...current, tier }
+    const muted = 'muted' in patch ? patch.muted : current.muted
+    const next: FriendSettings = { ...(tier === undefined ? {} : { tier }), ...(muted === undefined ? {} : { muted }) }
+    if (Object.keys(next).length === 0) delete this.data.friends[fp]
+    else this.data.friends[fp] = { ...current, ...next }
     await mkdir(dirname(this.path), { recursive: true })
     await writeFile(this.path, JSON.stringify(this.data, null, 2), 'utf8')
     return this.get(fp)

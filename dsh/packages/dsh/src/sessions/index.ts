@@ -84,7 +84,7 @@ import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:f
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ALTER_EVENT_TYPES, chatFromEvents, EMPTY_CHAT, EMPTY_LATEST, latestFromEvents, triggerOf, type AlterChat, type AlterLatest } from '../alter-state.ts'
+import { ALTER_EVENT_TYPES, chatFromEvents, classifyUserMessage, EMPTY_CHAT, EMPTY_LATEST, latestFromEvents, textOf, triggerOf, type AlterChat, type AlterLatest } from '../alter-state.ts'
 import { AgentRegistryStore, type SeatAgent } from '../agent-registry.ts'
 import { DraftStore, type PendingDraft } from '../drafts.ts'
 import type { A2AMessageId, A2ANoteKind, A2ASourceMeta, Fingerprint } from '../events.ts'
@@ -98,6 +98,8 @@ import type { ConversationEntry, Friend, InboundMessage, NetworkClient } from '.
 import { agentPersonaTemplate, PERSONA_NONE, PERSONA_ORDER, PERSONA_SECTION, PERSONA_TEMPLATE, PERSONA_VARIABLES } from '../persona.ts'
 import { DEFAULT_AUTO_REPLY_PER_HOUR, DEFAULT_REPLY_TIER, HourlyWindow, mentionsAgent, mentionsMe, routeInbound, UNKNOWN_TRIGGER, wakeAgentForGroup, wakeForGroup, type DraftReason, type ReplyTier, type TurnTrigger } from '../policy.ts'
 import type { SoulmirrorSettings } from '../settings.ts'
+import { MemoryStore, type AllowScopes, type MemoryKind, type MemoryRecord, type MemoryScope } from '../memory/store.ts'
+import { extractMemories, type MemoryLlm } from '../memory/extract.ts'
 import type {} from '../index.ts'
 
 export interface Config {
@@ -108,7 +110,7 @@ export interface Config {
 }
 
 export const name = 'soulmirror-sessions'
-export const inject = ['soulmirror', 'soulmirrorHome', 'agents', 'agentLoop', 'sessions', 'workspaceRegistry']
+export const inject = ['soulmirror', 'soulmirrorHome', 'agents', 'agentLoop', 'sessions', 'workspaceRegistry', 'sessionPersistence']
 
 const WORKSPACE_TITLE = '灵镜'
 const PRESET_ID = 'soulmirror-chat'
@@ -159,6 +161,8 @@ export type SessionsEvent =
   | { readonly kind: 'outbound'; readonly fp: Fingerprint; readonly gid?: string; readonly entry: ConversationEntry }
   /** A pending draft was stored or decided. */
   | { readonly kind: 'draft'; readonly action: 'added' | 'removed'; readonly draft: PendingDraft; readonly decision?: 'approved' | 'rejected' | 'revise' }
+  /** Memory extraction progress for the owner's popup: extracting → extracted(count, memories). */
+  | { readonly kind: 'memory'; readonly phase: 'extracting' | 'extracted'; readonly count: number; readonly memories?: readonly { id: string; content: string }[]; readonly clue?: string }
 
 /** Public face for tools / API / tests. */
 export interface AlterSessions {
@@ -186,6 +190,10 @@ export interface AlterSessions {
   tierStored(fp: Fingerprint): ReplyTier | undefined
   /** Store (or clear with undefined) the reply tier of a friend; answers the effective tier. */
   setTier(fp: Fingerprint, tier: ReplyTier | undefined): Promise<ReplyTier>
+  /** Do-not-disturb flag of a friend (false by default). */
+  friendMuted(fp: Fingerprint): boolean
+  /** Set or clear a friend's do-not-disturb. */
+  setFriendMuted(fp: Fingerprint, muted: boolean): Promise<boolean>
   /** The per-group alter toggle (dsh-groups.json `alter`); default off (quiet by default). */
   groupAlterOn(gid: string): boolean
   /** Flip the per-group alter toggle; answers the stored value. */
@@ -198,6 +206,10 @@ export interface AlterSessions {
    */
   groupVoices(gid: string): GroupSettings
   setGroupVoices(gid: string, patch: GroupSettingsPatch): Promise<GroupSettings>
+  /** Do-not-disturb flag of a group (false by default). */
+  groupMuted(gid: string): boolean
+  /** Set or clear a group's do-not-disturb. */
+  setGroupMuted(gid: string, muted: boolean): Promise<boolean>
   /** Named seat agents of this seat (read side of ../agent-registry.ts). */
   agents(): readonly SeatAgent[]
   /** Create or update one seat agent; its session is (re)shaped in the background. */
@@ -235,6 +247,20 @@ export interface AlterSessions {
   decideDraft(id: string, decision: DraftDecision): Promise<{ draft: PendingDraft; entry?: ConversationEntry }>
   /** fp → legacy (P3) friend session id, for information only. */
   legacyFriendSessions(): Readonly<Record<string, string>>
+  /** Cancel (delete) extracted pre-memories by uid; answers how many were removed. */
+  cancelMemory(ids: readonly string[]): Promise<number>
+  /** All memories visible to one scope (the memory page). */
+  memoryList(allow: AllowScopes): MemoryRecord[]
+  /** Add a memory by hand (origin manual). */
+  memoryAdd(input: { kind: MemoryKind; content: string; scope: MemoryScope }): MemoryRecord
+  /** Edit one memory's content; answers whether it existed. */
+  memoryUpdate(uid: string, content: string, scope?: MemoryScope): boolean
+  /** Delete one memory by uid. */
+  memoryRemove(uid: string): boolean
+  /** 埋点：进群（未读多）时总结该群最近一段消息并提炼记忆（限量，避免全量 token）。 */
+  memorySummarizeGroup(gid: string): void
+  /** 分身/agent 通过 soulmirror_remember 工具主动记住一条记忆（origin auto）。 */
+  memoryRemember(input: { kind: MemoryKind; content: string; scope: MemoryScope }): MemoryRecord
   /** Publish a live event (the tools plugin reports the entries it archived). */
   emit(event: SessionsEvent): void
   /** Subscribe to live events. */
@@ -388,6 +414,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const draftStore = DraftStore.at(a2aDir)
   const groupSettings = GroupSettingsStore.at(home)
   const agentRegistry = AgentRegistryStore.at(a2aDir)
+  const memoryStore = new MemoryStore(join(a2aDir, 'dsh-memory.db'))
 
   let alterId: SessionId | undefined
   let legacy: Record<string, string> = {}
@@ -606,6 +633,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
       sp.variable(PERSONA_VARIABLES.protocol, () => nonEmpty(protocolFile.read()))
       sp.variable(PERSONA_VARIABLES.drafts, () => draftsLine())
+      sp.variable(PERSONA_VARIABLES.memory, () => {
+        try {
+          const t = trigger()
+          const allow: AllowScopes = t.kind === 'group' && t.gid !== undefined
+            ? { global: true, group: t.gid }
+            : t.fp !== undefined ? { global: true, friend: t.fp } : { global: true }
+          const query = t.kind === 'group' && t.gid !== undefined ? (groupsByGid.get(t.gid)?.name ?? '')
+            : t.fp !== undefined ? (t.name ?? '') : ''
+          const recs = memoryStore.retrieve(allow, query, 8)
+          return recs.length === 0 ? PERSONA_NONE : recs.map(r => `- [${r.kind}] ${r.content}`).join('\n')
+        } catch {
+          return PERSONA_NONE
+        }
+      })
       sp.section({ name: PERSONA_SECTION, order: PERSONA_ORDER, text: PERSONA_TEMPLATE, complete: true })
     } catch (error: unknown) {
       log('warn', `persona registration failed: ${String(error)}`)
@@ -641,6 +682,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         const t = trigger()
         if (t.kind !== 'group' || t.gid === undefined) return PERSONA_NONE
         return nonEmpty(rulesWithoutPaidJoin(groupsByGid.get(t.gid)?.profile.rules))
+      })
+      sp.variable(PERSONA_VARIABLES.memory, () => {
+        try {
+          const t = trigger()
+          const query = t.kind === 'group' && t.gid !== undefined ? (groupsByGid.get(t.gid)?.name ?? '') : ''
+          const recs = memoryStore.retrieve({ global: true, agent: seat.name }, query, 8)
+          return recs.length === 0 ? PERSONA_NONE : recs.map(r => `- [${r.kind}] ${r.content}`).join('\n')
+        } catch {
+          return PERSONA_NONE
+        }
       })
       sp.section({ name: PERSONA_SECTION, order: PERSONA_ORDER, text: agentPersonaTemplate(seat.name, seat.cwd ?? a2aDir), complete: true })
     } catch (error: unknown) {
@@ -732,6 +783,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         alterId = undefined
       }
     }
+    await mkdir(mirrorDir, { recursive: true })
     const sessionId = `session-${crypto.randomUUID()}` as SessionId
     const composition = await composeSetup(sessionId)
     const agentOptions = defaultAgentOptions()
@@ -749,25 +801,38 @@ export function apply(ctx: Context, config: Config = {}): void {
     return handle.agent
   }
 
-  /** Create/reuse the plugin's dsh workspace and pin the alter session into it, so it never lands in the ungrouped list. */
-  const attachToWorkspace = async (sessionId: SessionId): Promise<void> => {
-    const registry = ctx.get('workspaceRegistry') as { create(path: string, title?: string): Promise<{ attachSession(id: SessionId): Promise<void> }> } | undefined
-    if (registry === undefined) return
+  /** Hide the alter session from every sidebar grouping surface (the SoulMirror page is its only home). */
+  const hideAlterFromSidebar = async (sessionId: SessionId): Promise<void> => {
     try {
-      await mkdir(mirrorDir, { recursive: true })
-      const ws = await registry.create(mirrorDir, WORKSPACE_TITLE)
-      await ws.attachSession(sessionId)
-      log('info', 'attached alter session ' + sessionId + ' to dsh workspace "' + WORKSPACE_TITLE + '" (' + a2aDir + ')')
+      await ctx.workspaceRegistry.archiveSession(sessionId)
+      log('info', `hidden the alter session ${sessionId} from the sidebar (archived)`)
     } catch (error: unknown) {
-      log('warn', 'attach alter session to dsh workspace failed: ' + String(error))
+      log('warn', `hide alter session ${sessionId} from the sidebar failed: ${String(error)}`)
     }
   }
+
+  /** Archive every persisted alter session (cwd = DSH_HOME/灵镜) so none lingers in the sidebar's ungrouped list. */
+  const archiveAlterSessions = async (): Promise<void> => {
+    const persistence = ctx.get('sessionPersistence') as { list(): Promise<Array<{ id: SessionId; cwd?: string }>> } | undefined
+    if (persistence === undefined) return
+    const mirrorPath = mirrorDir.replace(/\\/g, '/').replace(/\/+$/, '')
+    try {
+      const headers = await persistence.list()
+      for (const header of headers) {
+        const cwd = header.cwd?.replace(/\\/g, '/').replace(/\/+$/, '')
+        if (cwd !== undefined && cwd === mirrorPath) await hideAlterFromSidebar(header.id)
+      }
+    } catch (error: unknown) {
+      log('warn', `archive alter sessions by cwd failed: ${String(error)}`)
+    }
+  }
+
   /** Serialised: two concurrent callers (startup + a notification) must not create two sessions. */
   const ensureAlter = (): Promise<Agent> => {
     if (ensuring !== undefined) return ensuring
     const p = ensureAlterInner()
-      .then((agent) => {
-        if (alterId !== undefined) void attachToWorkspace(alterId)
+      .then(async (agent) => {
+        if (alterId !== undefined) await hideAlterFromSidebar(alterId)
         return agent
       })
       .finally(() => { ensuring = undefined })
@@ -1336,6 +1401,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
   }
 
+  // 进群总结的入口：声明在外层作用域供 face 引用，实际实现在下方 try 块内赋值。
+  let summarizeGroupMemories: (gid: string) => void = () => {}
+
   const face: AlterSessions = {
     sessionId: () => alterId,
     ensure: async () => (await ensureAlter()).session.id,
@@ -1361,6 +1429,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       publishAlter()
       return tierOf(fp)
     },
+    friendMuted: (fp) => friendSettings.get(fp).muted === true,
+    setFriendMuted: async (fp, muted) => {
+      await friendSettings.set(fp, { muted })
+      publishAlter()
+      return muted
+    },
     groupAlterOn: gid => groupSettings.alterOn(gid),
     setGroupAlter: async (gid, on) => {
       await groupSettings.set(gid, { alter: on })
@@ -1374,6 +1448,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       announceVoices(gid)
       publishAlter()
       return stored
+    },
+    groupMuted: (gid) => groupSettings.get(gid).muted === true,
+    setGroupMuted: async (gid, muted) => {
+      if (!groupSettings.isLoaded) await groupSettings.load()
+      await groupSettings.set(gid, { muted })
+      publishAlter()
+      return muted
     },
     agents: () => agentRegistry.list(),
     setAgent,
@@ -1394,6 +1475,19 @@ export function apply(ctx: Context, config: Config = {}): void {
     queueDraft,
     decideDraft,
     legacyFriendSessions: () => legacy,
+    cancelMemory: async (ids) => {
+      let removed = 0
+      for (const id of ids) if (memoryStore.remove(id)) removed += 1
+      return removed
+    },
+    memoryList: (allow) => memoryStore.list(allow),
+    memoryAdd: (input) => memoryStore.add({ ...input, sourceCh: 'manual', origin: 'manual' }),
+    memoryUpdate: (uid, content, scope) => {
+      try { return memoryStore.update(uid, content, scope) !== undefined } catch { return false }
+    },
+    memoryRemove: (uid) => memoryStore.remove(uid),
+    memorySummarizeGroup: (gid) => { summarizeGroupMemories(gid) },
+    memoryRemember: (input) => memoryStore.add({ ...input, sourceCh: input.scope.kind === 'global' ? 'alter' : input.scope.kind === 'shared-group' ? 'group' : 'agent', origin: 'auto' }),
     emit,
     on: (listener) => {
       listeners.add(listener)
@@ -1498,10 +1592,74 @@ export function apply(ctx: Context, config: Config = {}): void {
       const name = agentNameOfSession(sessionId)
       if (name !== undefined) publishAgent(name)
     }
+    /** 提炼共用的执行体：喂给模型、去重入库、发进度帧。 */
+    const runMemoryExtract = (scope: MemoryScope, allow: AllowScopes, summary: string, label: string): void => {
+      const opts = defaultAgentOptions()
+      if (opts === undefined) { log('warn', 'memory: no default model configured — skipping extraction'); return }
+      const llm = (ctx as unknown as { get(name: string): unknown }).get('llm') as unknown as MemoryLlm | undefined
+      if (llm === undefined) { log('warn', 'memory: llm service unavailable — skipping extraction'); return }
+      if (summary.trim() === '') { log('info', 'memory: nothing to summarize for ' + label); return }
+      const existing = memoryStore.list(allow).map(m => m.content)
+      log('info', 'memory: extracting for ' + label + ' (' + summary.length + ' chars)')
+      const clue = summary.replace(/\n/g, ' ').trim().slice(0, 24)
+      emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
+      void extractMemories({ llm, provider: opts.provider, model: opts.model, summary, existing, scope })
+        .then((memories) => {
+          const saved = memories.map(m => memoryStore.add(m))
+          if (saved.length > 0) log('info', 'memory: extracted ' + saved.length + ' item(s) -> ' + label)
+          emit({ kind: 'memory', phase: 'extracted', count: saved.length, memories: saved.map(r => ({ id: r.uid, content: r.content })) })
+        })
+        .catch((error: unknown) => {
+          log('warn', 'memory extract failed: ' + String(error))
+          emit({ kind: 'memory', phase: 'extracted', count: 0 })
+        })
+    }
+
+    /** 群消息总结的窗口上限（条数），避免几万条消息一次性喂给模型。 */
+    const MEMORY_GROUP_WINDOW = 50
+    /** 埋点：很久没来群（未读多）进群时，总结最近一段群消息并提炼记忆。 */
+    summarizeGroupMemories = (gid: string): void => {
+      setTimeout(() => {
+        if (disposed) return
+        void client.groups.conversation(gid, { limit: MEMORY_GROUP_WINDOW })
+          .then(({ entries }) => {
+            const lines: string[] = []
+            for (const e of entries) {
+              lines.push((e.from === undefined ? 'member' : e.from) + ': ' + e.body)
+            }
+            runMemoryExtract({ kind: 'shared-group', gid }, { global: true, group: gid }, lines.join('\n'), 'shared-group:' + gid)
+          })
+          .catch((error: unknown) => { log('warn', 'memory: group summary conversation failed for ' + gid + ': ' + String(error)) })
+      }, 0)
+    }
+
     // Agent panes also stream the THINKING (reasoning deltas); the alter pane does not.
     const AGENT_EVENT_TYPES = new Set([...ALTER_EVENT_TYPES, 'assistant/chunk', 'reasoning-chunks'])
+    /** 本回合是否调用了 soulmirror_remember（决定收尾弹「有记忆」还是「没记忆」）。 */
+    const turnHadRemember = (events: readonly { type: string; data: unknown }[]): boolean => {
+      let start = -1
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        if (events[i]!.type === 'turn/start') { start = i; break }
+      }
+      if (start < 0) return false
+      for (let i = start; i < events.length; i += 1) {
+        const ev = events[i]!
+        if (ev.type === 'tool/call' && (ev.data as Record<string, unknown>)['name'] === 'soulmirror_remember') return true
+      }
+      return false
+    }
     ctx.on('session/event', (session, event) => {
       if (disposed) return
+      // 埋点：owner 发话 → 弹「正在倾听/提炼」（带一条截断的对话线索）。
+      if (event.type === 'user/message' && classifyUserMessage(event.data) === 'owner') {
+        const text = textOf((event.data as unknown as { content?: unknown }).content).replace(/\n/g, ' ').trim()
+        const clue = text.length > 24 ? `${text.slice(0, 24)}…` : text
+        emit({ kind: 'memory', phase: 'extracting', count: 0, ...(clue === '' ? {} : { clue }) })
+      }
+      // 埋点：owner 回合结束且本回合没调 remember → 弹「没记忆」。
+      if (event.type === 'turn/end' && triggerOf(session.events).kind === 'owner' && !turnHadRemember(session.events)) {
+        emit({ kind: 'memory', phase: 'extracted', count: 0 })
+      }
       if (alterId !== undefined && session.id === alterId) {
         if (ALTER_EVENT_TYPES.has(event.type)) publishAlter()
         return
@@ -1559,21 +1717,25 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   /**
-   * P5 migration: P2–P4 created a dsh workspace "SoulMirror" per identity
-   * directory (`<home>/a2a`) and attached the alter session to it. The page is
-   * the alter's home now, so every such workspace is removed: its sessions are
-   * detached first (they stay, ungrouped), then the workspace record goes.
-   * Matching is by title AND a path ending in `/a2a` so a user's own
-   * workspace named "SoulMirror" is never touched.
+   * P5 migration: earlier versions created a dsh workspace for the alter — P2–P4
+   * under `<home>/a2a`, P5 under `DSH_HOME/灵镜` — and attached the alter session
+   * to it. The page is the alter's home now, so every such workspace is removed:
+   * its sessions are detached first (they stay, ungrouped), then the record goes.
+   * Matching is by title AND a plugin-owned path (`/a2a` or the mirror dir), so a
+   * user's own folder named "灵镜" elsewhere is never touched.
    */
   const removeLegacyWorkspaces = async (): Promise<void> => {
     for (const ws of ctx.workspaceRegistry.list()) {
       const path = ws.path.replace(/\\/g, '/').replace(/\/+$/, '')
-      if (ws.title !== WORKSPACE_TITLE || !path.endsWith('/a2a')) continue
+      const mirrorPath = mirrorDir.replace(/\\/g, '/').replace(/\/+$/, '')
+      if (ws.title !== WORKSPACE_TITLE || (!path.endsWith('/a2a') && path !== mirrorPath)) continue
       try {
-        for (const sessionId of [...ws.sessionIds]) await ws.detachSession(sessionId)
+        for (const sessionId of [...ws.sessionIds]) {
+          await ws.detachSession(sessionId)
+          await hideAlterFromSidebar(sessionId)
+        }
         await ctx.workspaceRegistry.delete(ws.id)
-        log('info', `migration: removed the legacy workspace "${WORKSPACE_TITLE}" (${ws.path}); its sessions stay, ungrouped`)
+        log('info', `migration: removed the legacy workspace "${WORKSPACE_TITLE}" (${ws.path}); its sessions stay, hidden from the sidebar`)
       } catch (error: unknown) {
         log('warn', `migration: could not remove workspace ${ws.id} (${ws.path}): ${String(error)}`)
       }
@@ -1618,6 +1780,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       if (draftStore.count() > 0) log('info', `${draftStore.count()} pending draft(s) loaded from ${draftStore.path}`)
       await removeLegacyWorkspaces()
+      await archiveAlterSessions()
       unsubscribe = client.subscribe((event) => {
         if (disposed) return
         switch (event.kind) {

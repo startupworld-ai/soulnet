@@ -201,6 +201,22 @@ printf '%s %s\n' "$VERSION" "$PLUGIN_SHA" > "$WEB/.soulmirror-template-version"
 mkdir -p "$STAGE/bin"
 cp "$ROOT/installer/windows/launcher.cmd" "$STAGE/bin/soulmirror-dsh.cmd"
 
+# ----------------------------------------------------- [5b] Electron desktop shell
+echo "-- [5b/7] Electron desktop shell"
+ELECTRON_VERSION="${ELECTRON_VERSION:-33.2.0}"
+mkdir -p "$STAGE/desktop-pkg"
+cat > "$STAGE/desktop-pkg/package.json" <<EOF
+{ "name": "smdsh-desktop-deps", "private": true, "dependencies": { "electron": "$ELECTRON_VERSION" } }
+EOF
+( cd "$STAGE/desktop-pkg" && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install --no-audit --no-fund )
+mkdir -p "$STAGE/desktop"
+cp -R "$STAGE/desktop-pkg/node_modules/electron/dist/." "$STAGE/desktop/"
+mkdir -p "$STAGE/desktop/app"
+cp "$ROOT/desktop/app/main.js" "$STAGE/desktop/app/main.js"
+cp "$ROOT/desktop/app/package.json" "$STAGE/desktop/app/package.json"
+[[ -f "$STAGE/desktop/electron.exe" ]] || { echo "error: electron.exe missing" >&2; exit 1; }
+rm -rf "$STAGE/desktop-pkg"
+
 # ------------------------------------------------------------------ [6] ISCC
 if [[ "${SKIP_ISCC:-0}" == "1" ]]; then
   echo "-- [6/6] SKIP_ISCC=1: staged at $STAGE, no installer compiled"

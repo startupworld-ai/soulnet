@@ -27,6 +27,14 @@ func isPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
+// shortAck truncates an ack id (the inbox file name) for readable log lines.
+func shortAck(ack string) string {
+	if len(ack) > 16 {
+		return ack[len(ack)-16:]
+	}
+	return ack
+}
+
 // PollWaitSec is the wait of each long poll in seconds (the relay caps it at 55).
 const PollWaitSec = 25
 
@@ -78,6 +86,9 @@ func (n *Peer) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = 5 * time.Second
+		if len(items) > 0 {
+			n.logf("[recv-debug] poll returned %d item(s)", len(items))
+		}
 		var acks []string
 		hadTransient := false
 		for i := range items {
@@ -102,8 +113,12 @@ func (n *Peer) Run(ctx context.Context) error {
 				acks = append(acks, it.AckID)
 				continue
 			}
+			n.logf("[recv-debug] handle TRANSIENT gid=%s from=%s err=%v", a2a.ShortFp(it.Envelope.GID), a2a.ShortFp(it.Envelope.From), err)
 			n.logf("transient failure handling incoming mail (retry next round): %v", err)
 			hadTransient = true
+		}
+		if len(acks) > 0 {
+			n.logf("[recv-debug] acking %d item(s)", len(acks))
 		}
 		if err := pc.Ack(ctx, acks); err != nil && ctx.Err() == nil {
 			n.logf("ack failed (redelivered next round, deduplicated idempotently): %v", err)

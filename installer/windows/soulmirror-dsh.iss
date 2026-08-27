@@ -30,6 +30,8 @@
 #define AppPublisher "StartupWorld"
 #define AppURL "https://github.com/startupworld-ai/soulnet"
 #define LauncherCmd "bin\soulmirror-dsh.cmd"
+#define DesktopExe "desktop\electron.exe"
+#define DesktopApp "desktop\app"
 #define IconFile "assets\soulmirror.ico"
 
 [Setup]
@@ -85,11 +87,11 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdi
 Source: "{#IconFile}"; DestDir: "{app}"; DestName: "soulmirror.ico"
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#LauncherCmd}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\soulmirror.ico"; Comment: "SoulMirror on DeepSeek Harness"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#LauncherCmd}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\soulmirror.ico"; Comment: "SoulMirror on DeepSeek Harness"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#DesktopExe}"; Parameters: """{app}\{#DesktopApp}"""; WorkingDir: "{app}"; IconFilename: "{app}\soulmirror.ico"; Comment: "SoulMirror on DeepSeek Harness"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#DesktopExe}"; Parameters: """{app}\{#DesktopApp}"""; WorkingDir: "{app}"; IconFilename: "{app}\soulmirror.ico"; Comment: "SoulMirror on DeepSeek Harness"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#LauncherCmd}"; Description: "Launch {#AppName} now"; Flags: postinstall skipifsilent shellexec nowait
+Filename: "{app}\{#DesktopExe}"; Parameters: """{app}\{#DesktopApp}"""; Description: "Launch {#AppName} now"; Flags: postinstall skipifsilent nowait
 
 [UninstallDelete]
 ; Files the launcher or dsh may create inside the install dir (logs etc.).

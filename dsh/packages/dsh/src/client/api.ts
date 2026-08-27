@@ -14,12 +14,28 @@ export type ReplyTier = 'notify' | 'draft' | 'auto'
 export interface ApiFriend {
   fp: string; name: string; remark?: string; cardName?: string; online?: boolean
   unread: number; count: number; lastTs?: number; lastBody?: string; typing?: boolean
+  /** Do-not-disturb: suppress the unread badge / new-mail toast. */
+  muted?: boolean
   /** Per-friend diplomacy protocol override (friends.yaml `protocol`). */
   protocol?: string
   /** Effective reply tier (P3); `tierExplicit` when stored for this friend rather than the global default. */
   tier?: ReplyTier; tierExplicit?: true
   /** Pending drafts of the alter to this friend (P4). */
   drafts?: number
+}
+/** One stored memory (the memory page). */
+export interface ApiMemory {
+  id: number
+  uid: string
+  kind: string
+  content: string
+  scope: { kind: string; name?: string; fp?: string; gid?: string }
+  sourceCh: string
+  /** 'auto' = extracted; 'manual' = added by hand. */
+  origin: 'auto' | 'manual'
+  weight: number
+  createdAt: number
+  hitCount: number
 }
 /** What woke a turn of the alter session. */
 export interface ApiTrigger { kind: 'owner' | 'inbound' | 'inbound-auto' | 'unknown'; fp?: string; name?: string; messageId?: string }
@@ -42,7 +58,7 @@ export interface ApiAlterState {
 export type ApiChatItem =
   | { kind: 'owner'; key: string; ts: number; text: string; revise?: { name: string; fp: string } }
   | { kind: 'alter'; key: string; ts: number; text: string; turn: number }
-  | { kind: 'inbound'; key: string; ts: number; fp: string; name: string; id: string; body: string; auto: boolean; type?: string }
+  | { kind: 'inbound'; key: string; ts: number; fp: string; name: string; id: string; body: string; auto: boolean; type?: string; gid?: string }
   | { kind: 'send'; key: string; ts: number; fp: string; body: string; outcome?: ApiSendOutcome; gate?: string; draftId?: string; detail?: string; auto: boolean }
   | { kind: 'note'; key: string; ts: number; note: 'draft-approved' | 'draft-rejected' | 'draft-revise'; fp: string; text: string; draftId?: string }
   | { kind: 'turn-failed'; key: string; ts: number; turn: number; reason: string; message?: string }
@@ -57,6 +73,8 @@ export interface ApiDraft {
   sessionId?: string
   /** Seat agent that drafted it; absent = the default alter. */
   agent?: string
+  /** Set when the draft targets a group (fp then carries the gid too). */
+  gid?: string
 }
 /** Alter-wide settings as the host resolves them (live). */
 export interface ApiAlterConfig {
@@ -100,6 +118,8 @@ export interface ApiGroup {
   mine: boolean
   version: number; members: number
   unread: number; count: number; lastTs?: number; lastBody?: string
+  /** Do-not-disturb: suppress the unread badge / new-mail toast. */
+  muted?: boolean
   /** Governance profile; absent on legacy groups. */
   profile?: ApiGroupProfile
 }
@@ -230,6 +250,17 @@ export const api = {
   presence: (fps: readonly string[]) => call<{ online: Record<string, boolean> }>('presence', { fps: [...fps] }),
   /** The owner instructs their alter (an owner user/message + a woken turn in the alter session). */
   instruct: (text: string) => call<{ sessionId: string; messageId: string; state: ApiAlterState | null }>('alter.instruct', { text }),
+  /** Cancel (delete) extracted pre-memories by uid. */
+  cancelMemory: (ids: readonly string[]) => call<{ ok: true; removed: number }>('memory.cancel', { ids: [...ids] }),
+  memoryList: (allow: { global?: boolean; agent?: string; friend?: string; group?: string }) =>
+    call<{ memories: ApiMemory[] }>('memory.list', { ...allow }),
+  memoryAdd: (input: { kind: string; content: string; scope: { kind: string; name?: string; fp?: string; gid?: string } }) =>
+    call<{ memory: ApiMemory }>('memory.add', { ...input }),
+  memoryUpdate: (uid: string, content: string, scope?: { kind: string; name?: string; fp?: string; gid?: string }) =>
+    call<{ ok: boolean }>('memory.update', { uid, content, ...(scope === undefined ? {} : { scope }) }),
+  memoryRemove: (uid: string) => call<{ ok: boolean }>('memory.remove', { uid }),
+  /** 埋点：进群（未读多）时总结该群最近一段消息并提炼记忆。 */
+  memorySummarize: (gid: string) => call<{ ok: boolean }>('memory.summarize', { gid }),
   /** The alter's latest state (null = no session yet). */
   sessionLatest: () => call<{ state: ApiAlterState | null }>('session.latest', {}),
   /** The alter transcript (last `limit` items). */
@@ -244,7 +275,7 @@ export const api = {
   decideDraft: (id: string, decision: { action: 'approve'; body?: string } | { action: 'reject' } | { action: 'revise'; feedback: string }) =>
     call<{ ok: true; draft: ApiDraft; entry?: ApiEntry }>('drafts.decide', { id, ...decision }),
   /** Note / protocol override (peer) and reply tier (plugin) of a friend; `tier: ''` = back to the default. */
-  friendSet: (fp: string, patch: { note?: string; protocol?: string; tier?: ReplyTier | '' }) => call<{ friend: ApiFriend }>('friends.set', { fp, ...patch }),
+  friendSet: (fp: string, patch: { note?: string; protocol?: string; tier?: ReplyTier | ''; muted?: boolean }) => call<{ friend: ApiFriend }>('friends.set', { fp, ...patch }),
   friendCard: (fp: string) => call<{ fp: string; name: string; uri: string }>('friends.card', { fp }),
   protocolGet: () => call<{ text: string; path: string; exists: boolean }>('protocol.get', {}),
   protocolSet: (text: string) => call<{ ok: true; text: string; path: string }>('protocol.set', { text }),
@@ -277,7 +308,7 @@ export const api = {
   /** Per-group client settings (v2 voices): which of my voices participate here + the duty slot. */
   groupSettingsGet: (gid: string) => call<{ settings: ApiGroupVoices }>('group.settings', { gid }),
   /** Patch: legacy {alter, mode}, one voice switch (commanders replaces the group whitelist when given), or {duty: name | null}. */
-  groupSettingsSet: (gid: string, patch: { alter?: boolean; mode?: 'mention' | 'always'; voice?: { name: string; on: boolean; commanders?: string[] }; duty?: string | null }) =>
+  groupSettingsSet: (gid: string, patch: { alter?: boolean; mode?: 'mention' | 'always'; voice?: { name: string; on: boolean; commanders?: string[] }; duty?: string | null; muted?: boolean }) =>
     call<{ ok: true; settings: ApiGroupVoices }>('group.settings', { gid, ...patch }),
   /** Named seat agents: session info + full registry records. */
   agentsList: () => call<{ agents: ApiSeatAgent[]; registry: { name: string; preset?: string; cwd?: string; approval?: boolean }[] }>('agents.list', {}),
@@ -285,6 +316,14 @@ export const api = {
   agentsSet: (agent: { name: string; preset?: string; cwd?: string; prompt?: string; approval?: boolean }) =>
     call<{ ok: true; agent: { name: string; preset?: string; cwd?: string; prompt?: string; approval?: boolean } }>('agents.set', agent),
   agentsRemove: (name: string) => call<{ ok: true; removed: boolean }>('agents.remove', { name }),
+}
+
+/** Memory-extraction frame payload (shared by the SSE frame and onMemory listeners). */
+export interface MemoryFrame {
+  phase: 'extracting' | 'extracted'
+  count: number
+  memories?: Array<{ id: string; content: string }>
+  clue?: string
 }
 
 export type NetworkEventFrame =
@@ -312,6 +351,8 @@ export type NetworkEventFrame =
   | { kind: 'group_outbound'; gid: string; entry: ApiEntry }
   /** A stranger applied to join one of my groups (owner side). */
   | { kind: 'group_application'; gid: string; request: { fp: string; name: string; note: string } }
+  /** Memory extraction progress: the owner's popup shows extracting → extracted(count, memories). */
+  | ({ kind: 'memory' } & MemoryFrame)
 
 export interface NetworkStoreSnapshot {
   readonly state: ApiState | undefined
@@ -350,6 +391,7 @@ export class NetworkStore {
   private snapshot: NetworkStoreSnapshot = { state: undefined, loading: false, error: undefined, typing: {}, status: undefined, revision: 0, inbox: EMPTY_INBOX }
   private readonly listeners = new Set<() => void>()
   private readonly mailListeners = new Set<(notice: MailNotice) => void>()
+  private readonly memoryListeners = new Set<(frame: MemoryFrame) => void>()
   private readonly frameListeners = new Set<(frame: NetworkEventFrame) => void>()
   private source: EventSource | undefined
   private everConnected = false
@@ -421,6 +463,12 @@ export class NetworkStore {
   onFrame = (listener: (frame: NetworkEventFrame) => void): (() => void) => {
     this.frameListeners.add(listener)
     return () => { this.frameListeners.delete(listener) }
+  }
+
+  /** Subscribe to memory-extraction frames (the owner's popup). Does not open the SSE stream by itself. */
+  onMemory = (listener: (frame: MemoryFrame) => void): (() => void) => {
+    this.memoryListeners.add(listener)
+    return () => { this.memoryListeners.delete(listener) }
   }
 
   /** Fold a `presence` answer (fp -> online) into the friend rows. */
@@ -510,6 +558,9 @@ export class NetworkStore {
         case 'draft':
           this.set({ revision, inbox: folded.state })
           return
+        case 'memory':
+          for (const l of this.memoryListeners) l({ phase: frame.phase, count: frame.count, ...(frame.memories === undefined ? {} : { memories: frame.memories }), ...(frame.clue === undefined ? {} : { clue: frame.clue }) })
+          return
         case 'alter':
           // Folded by the page store (frame listeners); bump the revision so views re-read.
           this.set({ revision })
@@ -535,7 +586,7 @@ export class NetworkStore {
           return
       }
     }
-    for (const kind of ['message', 'outbound', 'typing', 'friend_request', 'friend_accept', 'presence', 'status', 'alter', 'agent', 'draft', 'group_message', 'group_typing', 'group_update', 'group_outbound', 'group_application']) {
+    for (const kind of ['message', 'outbound', 'typing', 'friend_request', 'friend_accept', 'presence', 'status', 'alter', 'agent', 'draft', 'memory', 'group_message', 'group_typing', 'group_update', 'group_outbound', 'group_application']) {
       source.addEventListener(kind, handle as EventListener)
     }
     source.onerror = () => {

@@ -3,15 +3,15 @@
  * (composer → `agent.instruct`), watches its transcript (`agent.history`,
  * same fold as the alter's — owner bubbles right, the agent's notes left,
  * the group messages that woke it as compact cards, its group posts as send
- * lines) and reaches its settings (the sheet) and its native dsh session
- * from the header. Live: SSE `agent` frames for this name trigger a
- * debounced refetch.
+ * lines) and reaches its settings (the sheet). Live: SSE `agent` frames for
+ * this name trigger a debounced refetch.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Button, IconRightUpOutline14, IconSendOutline16, IconSettingsOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconSendOutline16, IconSettingsOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import { api, networkStore, type ApiChatItem, type ApiHistory, type ApiSeatAgent } from './api.ts'
 import { AgentSettingsSheet } from './AgentSettingsSheet.tsx'
 import { ContentTabs } from './ContentTabs.tsx'
+import { MemoryPane } from './MemoryPane.tsx'
 import { ProcessItemView } from './process-ui.tsx'
 import { formatClock, formatDay, tabsFor, type PaneTab } from './page-state.ts'
 import { pageStore } from './page-store.ts'
@@ -24,8 +24,6 @@ const REFETCH_DEBOUNCE_MS = 150
 export interface AgentPaneProps {
   t: Translate
   agent: ApiSeatAgent
-  /** Open the agent's dsh session (closes the page). */
-  onOpenSession: (sessionId: string) => void
   /** The agent was removed in the settings sheet (the page falls back to the alter). */
   onRemoved: () => void
 }
@@ -35,7 +33,7 @@ function dayOf(ts: number): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
-export function AgentPane({ t, agent, onOpenSession, onRemoved }: AgentPaneProps) {
+export function AgentPane({ t, agent, onRemoved }: AgentPaneProps) {
   const name = agent.name
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const [history, setHistory] = useState<ApiHistory | undefined>(undefined)
@@ -249,7 +247,6 @@ export function AgentPane({ t, agent, onOpenSession, onRemoved }: AgentPaneProps
           <div className="sm-home-title"><span>{t('agent.home.actions')}</span></div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <button type="button" className="sm-ghostbtn" onClick={() => { setSheetOpen(true) }}><IconSettingsOutline16 size={14} /> {t('agent.settings')}</button>
-            {sessionId !== null ? <button type="button" className="sm-ghostbtn" onClick={() => { onOpenSession(sessionId) }}><IconRightUpOutline14 size={14} /> {t('alter.openDsh')}</button> : null}
           </div>
         </div>
       </div>
@@ -274,19 +271,10 @@ export function AgentPane({ t, agent, onOpenSession, onRemoved }: AgentPaneProps
               <IconSettingsOutline16 size={14} /> {t('agent.settings')}
             </button>
           </Tooltip>
-          {sessionId !== null
-            ? (
-              <Tooltip label={t('alter.openDsh.hint')} side="bottom">
-                <button type="button" className="sm-ghostbtn" onClick={() => { onOpenSession(sessionId) }} data-soulmirror-agent-open-dsh>
-                  <IconRightUpOutline14 size={14} /> {t('alter.openDsh')}
-                </button>
-              </Tooltip>
-            )
-            : null}
         </div>
       </header>
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
-      {paneTab === 'info' ? agentInfo : <>
+      {paneTab === 'info' ? agentInfo : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true, agent: name }} scope={{ kind: 'agent', name }} /> : <>
       <div ref={scroller} className="sm-thread" onScroll={onScroll} data-soulmirror-agent-thread>
         <div className="sm-thread-inner">
           {history === undefined && error === undefined ? <span className="sm-muted" style={{ alignSelf: 'center', fontSize: 12 }}>{t('page.thread.loading')}</span> : null}

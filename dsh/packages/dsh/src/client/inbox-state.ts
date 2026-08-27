@@ -44,10 +44,10 @@ export interface MailNotice {
 
 export const EMPTY_INBOX: InboxState = { friends: [], groups: [], pending: [], drafts: [], alterSessionId: undefined, typing: {}, groupApps: {} }
 
-/** Unread total over all friends (the sidebar badge number). */
-export function unreadTotal(friends: readonly Pick<InboxFriend, 'unread'>[]): number {
+/** Unread total over all friends (the sidebar badge number), skipping muted friends. */
+export function unreadTotal(friends: readonly Pick<InboxFriend, 'unread' | 'muted'>[]): number {
   let total = 0
-  for (const f of friends) total += f.unread > 0 ? f.unread : 0
+  for (const f of friends) total += f.unread > 0 && f.muted !== true ? f.unread : 0
   return total
 }
 

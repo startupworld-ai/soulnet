@@ -51,6 +51,8 @@ export interface GroupSettings {
   readonly voices?: Readonly<Record<string, GroupVoiceSetting>>
   /** The duty voice: answers unmentioned traffic (capped by the group's wake policy); absent = mention-only for every voice. */
   readonly duty?: string
+  /** Do-not-disturb: mute the unread badge / new-mail toast for this group. */
+  readonly muted?: boolean
 }
 
 export type GroupSettingsMap = Record<string, GroupSettings>
@@ -93,8 +95,9 @@ function normalizeEntry(value: unknown): GroupSettings | undefined {
   let duty = str(v['duty'])
   if (duty === '' && v['mode'] === 'always' && voices[VOICE_ALTER] !== undefined) duty = VOICE_ALTER
   if (duty !== '' && voices[duty] === undefined) duty = '' // duty implies participation
-  if (Object.keys(voices).length === 0) return undefined
-  return { voices, ...(duty === '' ? {} : { duty }) }
+  const muted = v['muted'] === true
+  if (Object.keys(voices).length === 0 && !muted) return undefined
+  return { ...(Object.keys(voices).length === 0 ? {} : { voices }), ...(duty === '' ? {} : { duty }), ...(muted ? { muted: true } : {}) }
 }
 
 function normalize(raw: unknown): GroupSettingsMap {
@@ -134,6 +137,8 @@ export interface GroupSettingsPatch {
   readonly voice?: { readonly name: string; readonly on: boolean; readonly commanders?: readonly string[] }
   /** Set the duty voice (implies switching it on) or clear it with `null`. */
   readonly duty?: string | null
+  /** Do-not-disturb switch. */
+  readonly muted?: boolean
 }
 
 /** In-memory copy of dsh-groups.json with write-through (single writer: the sessions plugin's instance). */
@@ -225,8 +230,12 @@ export class GroupSettingsStore {
     }
     if (duty !== undefined && voices[duty] === undefined) duty = undefined
 
-    if (Object.keys(voices).length === 0) delete this.data[gid]
-    else this.data[gid] = { voices, ...(duty === undefined ? {} : { duty }) }
+    let muted = current.muted
+    if (patch.muted !== undefined) muted = patch.muted
+
+    const entry: GroupSettings = { ...(Object.keys(voices).length === 0 ? {} : { voices }), ...(duty === undefined ? {} : { duty }), ...(muted === true ? { muted: true } : {}) }
+    if (Object.keys(entry).length === 0) delete this.data[gid]
+    else this.data[gid] = entry
     await mkdir(dirname(this.path), { recursive: true })
     await writeFile(this.path, JSON.stringify(this.data, null, 2), 'utf8')
     return this.get(gid)

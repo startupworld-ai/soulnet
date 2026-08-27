@@ -19,7 +19,7 @@
  * `ctx.commandUi`); the only value imports are react, ui-primitives and this
  * package's own files (bundle purity).
  */
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: ctx.locale, ctx.commandUi, ctx.settingsScope, the conversation/settings SlotMap rows.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-commands/client'
@@ -39,6 +39,7 @@ import { api } from './api.ts'
 import type {} from './group-room.ts'
 import type {} from './alter-card.ts'
 import { AlterSettingsCard } from './AlterSettingsCard.tsx'
+import { setDirectoryPicker } from './dir-picker.ts'
 import { InboxOverlay, type InboxOverlayInjected } from './InboxOverlay.tsx'
 import { en, NS, zh } from './locales.ts'
 import { ChatRoom } from './rooms/ChatRoom.tsx'
@@ -64,7 +65,7 @@ export { DEFAULT_ROOM_KEY, roomKeyOf } from './group-room.ts'
 
 const SETTINGS_NAMESPACE = 'soulmirror'
 
-export const inject = ['slots', 'locale', 'conversationEvents', 'sessions', 'settingsScope', 'commandUi', 'theme']
+export const inject = ['slots', 'locale', 'conversationEvents', 'sessions', 'settingsScope', 'commandUi', 'theme', 'workspaces']
 
 /** Whether a session cwd is the SoulMirror workspace (`<home>/a2a`, e.g. `~/.soulnet/a2a`). */
 export function isSoulmirrorCwd(cwd: string | undefined): boolean {
@@ -76,6 +77,7 @@ export function isSoulmirrorCwd(cwd: string | undefined): boolean {
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'soulmirror: dictionaries')
   const t = ctx.locale.bind(NS)
+  setDirectoryPicker(() => ctx.workspaces.pickDirectory())
   ctx.effect(() => {
     ensureStyles()
     return removeStyles
@@ -83,7 +85,6 @@ export function apply(ctx: ClientContext): void {
   // SoulMirror branding (sidebar brand slots, title, favicon) + the
   // Discord-flavoured dark palette over the whole shell (./Branding.tsx).
   installBranding(ctx)
-  const openSession = (id: string): void => { ctx.sessions.open(id as SessionId) }
 
   // 1. Inbound mail / plugin notes → `a2a-message` nodes (engine), then the
   //    keyed renderer (slot) for the native alter session view.
@@ -136,7 +137,7 @@ export function apply(ctx: ClientContext): void {
   //     sidebar (the settings scope is bound once below; the page reads
   //     `directSend` from it live)
   const scope = ctx.settingsScope.bind<SoulmirrorSettingsValues>({ namespace: SETTINGS_NAMESPACE })
-  const pageInjected = (): SoulmirrorPageInjected => ({ openSession, scope })
+  const pageInjected = (): SoulmirrorPageInjected => ({ scope })
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
     id: 'soulmirror-page',
@@ -194,7 +195,6 @@ export function apply(ctx: ClientContext): void {
     return () => { clearInterval(timer) }
   })
   const settingsInjected = (): SoulmirrorSettingsInjected => ({
-    openSession,
     scope,
   })
   ctx.slots.inject('settings.section', () => {

@@ -6,6 +6,7 @@ package peer
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -840,10 +841,12 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 	st := n.Groups.Get(gid)
 	if st == nil {
 		// The invite may still be in flight (fan-out can outrun the pairwise invite).
+		n.logf("[grp-debug] envelope gid=%s sender=%s NOT-JOINED (transient retry)", a2a.ShortFp(gid), a2a.ShortFp(senderFp))
 		return n.transientOrDrop("grp-env-"+gid, fmt.Errorf("group %s not joined yet", a2a.ShortFp(gid)))
 	}
 	if st.Roster.Member(senderFp) == nil {
 		// Maybe my roster is stale; refresh once per budget round, else drop.
+		n.logf("[grp-debug] envelope gid=%s sender=%s NOT-IN-MY-ROSTER (refreshing)", a2a.ShortFp(gid), a2a.ShortFp(senderFp))
 		n.refreshRoster(context.Background(), gid)
 		if st = n.Groups.Get(gid); st == nil || st.Roster.Member(senderFp) == nil {
 			return permanent(fmt.Errorf("group %s: sender %s is not a member", a2a.ShortFp(gid), a2a.ShortFp(senderFp)))
@@ -854,12 +857,24 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 	rst := keys.Senders[senderFp]
 	if rst == nil {
 		n.gkMu.Unlock()
+		n.logf("[grp-debug] envelope gid=%s sender=%s KEY-MISSING (transient retry)", a2a.ShortFp(gid), a2a.ShortFp(senderFp))
 		return n.transientOrDrop("grp-key-"+gid+senderFp,
 			fmt.Errorf("%w (group %s, sender %s)", a2a.ErrGroupKeyMissing, a2a.ShortFp(gid), a2a.ShortFp(senderFp)))
 	}
 	msg, err := a2a.GroupOpen(rst, env.Cipher)
 	if err != nil {
 		n.gkMu.Unlock()
+		blobE, blobI := -1, -1
+		if raw, derr := base64.StdEncoding.DecodeString(env.Cipher); derr == nil {
+			var blob struct {
+				E int `json:"e"`
+				I int `json:"i"`
+			}
+			if json.Unmarshal(raw, &blob) == nil {
+				blobE, blobI = blob.E, blob.I
+			}
+		}
+		n.logf("[grp-debug] decrypt FAIL gid=%s sender=%s blobE=%d blobI=%d heldEpoch=%d heldIndex=%d err=%v", a2a.ShortFp(gid), a2a.ShortFp(senderFp), blobE, blobI, rst.Epoch, rst.Index, err)
 		if errors.Is(err, a2a.ErrGroupKeyMissing) {
 			return n.transientOrDrop("grp-epoch-"+gid+senderFp, err)
 		}
@@ -913,6 +928,7 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		if err != nil {
 			return err
 		}
+		n.logf("[grp-debug] RECEIVED text gid=%s sender=%s seq=%d body=%q", a2a.ShortFp(gid), a2a.ShortFp(senderFp), seq, stored.Body)
 		n.emit(Event{Kind: EventGroupMessage, GID: gid, Peer: senderFp, TS: time.Now(), Message: &stored, Seq: seq})
 		return nil
 	default:
@@ -925,6 +941,7 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 // inviter must BE the roster owner and be MY FRIEND (strangers cannot drag me into
 // groups). Joining = store the roster + distribute my sender key to every member.
 func (n *Peer) handleGroupInvite(msg *a2a.Message) error {
+	n.logf("[grp-debug] invite received gid=%s from=%s", a2a.ShortFp(msg.GID), a2a.ShortFp(msg.From))
 	if msg.Group == nil {
 		return permanent(fmt.Errorf("group invite carries no roster"))
 	}
@@ -944,6 +961,7 @@ func (n *Peer) handleGroupInvite(msg *a2a.Message) error {
 	// or I applied to exactly this group (the owner of an apply/open group is usually a
 	// stranger; my own application whitelists its invite).
 	if !n.Friends.IsFriend(msg.From) && !n.hasApplied(roster.GroupID) {
+		n.logf("[grp-debug] invite DROPPED gid=%s from=%s (not friend & not applied)", a2a.ShortFp(roster.GroupID), a2a.ShortFp(msg.From))
 		n.logf("dropping group invite from non-friend %s", a2a.ShortFp(msg.From))
 		return nil
 	}
