@@ -183,7 +183,7 @@ describe('normalizeGroupProfile (contract defaults)', () => {
   it('a missing profile means the standard template', () => {
     expect(normalizeGroupProfile(undefined)).toEqual({
       speakHumans: true, speakAgents: true, speakWho: 'all', agentWake: 'mention', agentTier: 'draft',
-      autoPerHour: DEFAULT_GROUP_AUTO_PER_HOUR, agentRounds: DEFAULT_GROUP_AGENT_ROUNDS, rules: '', admins: [], room: 'chat',
+      autoPerHour: DEFAULT_GROUP_AUTO_PER_HOUR, agentRounds: DEFAULT_GROUP_AGENT_ROUNDS, rules: '', admins: [], room: 'chat', join: 'invite',
     })
   })
 

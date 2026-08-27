@@ -31,7 +31,11 @@ const platformDirs = readdirSync(join(dshDir, 'packages'))
   .sort()
 const packages = []
 for (const dir of platformDirs) {
-  const bin = join(dir, 'bin', dir.includes('win32') ? 'soulnet.exe' : 'soulnet')
+  const exe = dir.includes('win32') ? '.exe' : ''
+  // A platform package ships either the peer binary (bin/soulnet[.exe]) or the
+  // payment gateway (bin/paygate[.exe]); check for whichever this package is.
+  const binName = dir.includes('paygate') ? `paygate${exe}` : `soulnet${exe}`
+  const bin = join(dir, 'bin', binName)
   if (!existsSync(bin)) {
     const msg = `${dir}: no ${bin} -- run scripts/build-peer-packages.mjs first`
     if (!allowMissing) {

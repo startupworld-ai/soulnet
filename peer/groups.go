@@ -25,6 +25,10 @@ var ErrNoGroup = fmt.Errorf("unknown group")
 // ErrGroupOwner: the operation is reserved for (or forbidden to) the group owner.
 var ErrGroupOwner = fmt.Errorf("group owner operation not allowed")
 
+// ErrPaidProofUsed: the applicant's payment tx has already been consumed by
+// another admission — one on-chain payment admits exactly one member.
+var ErrPaidProofUsed = fmt.Errorf("payment proof already used")
+
 // GroupSummary is one group row for hosts (list view).
 type GroupSummary struct {
 	GID      string `json:"gid"`
@@ -57,6 +61,8 @@ type GroupApplicationView struct {
 	Name string    `json:"name"`
 	Note string    `json:"note,omitempty"`
 	TS   time.Time `json:"ts"`
+	// Payment is the paid-join proof, when the group's join policy is "paid".
+	Payment *a2a.JoinPayment `json:"payment,omitempty"`
 }
 
 // GroupView is one group in full (info view).
@@ -1160,7 +1166,25 @@ func (n *Peer) applyGroupPin(st *a2a.GroupState, senderFp string, msg *a2a.Messa
 // fetch the public card from the group's home relay, then send a pairwise group_join
 // application to the owner. What happens next is the owner's join policy: open groups
 // add mechanically, apply groups pend for approval, invite-only groups drop it.
-func (n *Peer) GroupApply(ctx context.Context, groupURI, note string) (string, error) {
+// GroupLookup fetches the PUBLIC card of a group (join policy, paid-join price
+// and receiving address) so a stranger can decide to apply and pay.
+func (n *Peer) GroupLookup(ctx context.Context, groupURI string) (*a2a.GroupCard, error) {
+	gid, relayURL, _, err := a2a.ParseGroupURI(groupURI)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadCard, err)
+	}
+	ctx = ctxOrBackground(ctx)
+	card, err := n.groupRelayClient(relayURL).FetchGroupCard(ctx, gid)
+	if err != nil {
+		return nil, fmt.Errorf("%w: fetching the group card: %v", ErrNetwork, err)
+	}
+	if card.OwnerCard == nil || card.OwnerCard.Verify() != nil {
+		return nil, fmt.Errorf("%w: owner card", ErrBadCard)
+	}
+	return card, nil
+}
+
+func (n *Peer) GroupApply(ctx context.Context, groupURI, note string, payment *a2a.JoinPayment) (string, error) {
 	if !n.HasIdentity() {
 		return "", ErrNoIdentity
 	}
@@ -1188,7 +1212,7 @@ func (n *Peer) GroupApply(ctx context.Context, groupURI, note string) (string, e
 		return "", err
 	}
 	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), To: ownerFp, TS: time.Now(),
-		Type: a2a.TypeGroupJoin, GID: gid, Body: strings.TrimSpace(note), Card: myCard}
+		Type: a2a.TypeGroupJoin, GID: gid, Body: strings.TrimSpace(note), Card: myCard, Payment: payment}
 	n.markApplied(gid) // whitelist the invite that the (stranger) owner answers with
 	if err := n.sendGroupPairwise(ctx, card.OwnerCard, msg); err != nil {
 		return "", err
@@ -1233,11 +1257,21 @@ func (n *Peer) handleGroupJoin(msg *a2a.Message) error {
 		}
 		n.logf("group %s: open join — added %s", a2a.ShortFp(gid), a2a.ShortFp(fp))
 		return nil
-	case a2a.JoinApply:
-		if err := n.Groups.PutApplication(gid, &a2a.GroupApplication{Card: msg.Card, Note: msg.Body, TS: time.Now()}); err != nil {
+	case a2a.JoinApply, a2a.JoinPaid:
+		app := &a2a.GroupApplication{Card: msg.Card, Note: msg.Body, TS: time.Now()}
+		// Keep any attached payment proof for the owner to verify — both native
+		// paid groups and compat-encoded ones (join=apply + #paid-join marker in
+		// rules on old relays) arrive here with msg.Payment set.
+		if msg.Payment != nil {
+			app.Payment = msg.Payment
+		}
+		if policy == a2a.JoinPaid && msg.Payment == nil {
+			n.logf("group %s: paid join application from %s has no payment proof — pended for the owner", a2a.ShortFp(gid), a2a.ShortFp(fp))
+		}
+		if err := n.Groups.PutApplication(gid, app); err != nil {
 			return err
 		}
-		n.logf("group %s: join application from %s pended", a2a.ShortFp(gid), a2a.ShortFp(fp))
+		n.logf("group %s: join application from %s pended (policy=%s)", a2a.ShortFp(gid), a2a.ShortFp(fp), policy)
 		n.emit(Event{Kind: EventGroupApplication, GID: gid, Peer: fp, TS: time.Now(), Message: msg})
 		return nil
 	default: // invite-only: applications are not accepted
@@ -1254,7 +1288,7 @@ func (n *Peer) groupApplicationViews(gid string) []GroupApplicationView {
 		if err != nil {
 			continue
 		}
-		out = append(out, GroupApplicationView{Fp: fp, Name: cardName(app.Card), Note: app.Note, TS: app.TS})
+		out = append(out, GroupApplicationView{Fp: fp, Name: cardName(app.Card), Note: app.Note, TS: app.TS, Payment: app.Payment})
 	}
 	return out
 }
@@ -1288,6 +1322,18 @@ func (n *Peer) GroupApprove(ctx context.Context, gid, fp string) error {
 	}
 	if app == nil {
 		return fmt.Errorf("%w: no join application from %s", ErrNoPending, a2a.ShortFp(fp))
+	}
+	if app.Payment != nil && app.Payment.TxHash != "" {
+		// Replay guard (paid groups): claim the payment tx atomically BEFORE
+		// admitting — a single on-chain transfer admits exactly one member, so
+		// reusing a tx_hash (by anyone, for any later application) is refused.
+		claimed, err := n.Groups.ConsumePaymentTx(gid, app.Payment.TxHash)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return fmt.Errorf("%w: tx %s has already been used to join this group", ErrPaidProofUsed, a2a.ShortFp(app.Payment.TxHash))
+		}
 	}
 	if st.Roster.Member(fp) == nil {
 		if err := n.republishRoster(ctxOrBackground(ctx), st, nil, []*a2a.Card{app.Card}, nil); err != nil {

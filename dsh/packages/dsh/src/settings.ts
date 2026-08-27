@@ -40,9 +40,25 @@ export interface SoulmirrorSettings {
   autoReplyPerHour: number
   /** Debug: offer "Send as myself" in the friend pane (bypasses the alter). */
   directSend: boolean
+  /** Payment gateway: binary path (empty = `paygate` on PATH). */
+  paygateBinary: string
+  /** Payment gateway: loopback port. */
+  paygatePort: number
+  /** Proxy for the payment gateway's CDP calls (e.g. http://127.0.0.1:10808); empty = no proxy. */
+  paygateProxy: string
+  /** CDP API key id (empty = no CDP → tier-1 manual-address mode). */
+  cdpKeyId: string
+  /** CDP API key secret (base64 Ed25519 or PEM EC P-256). */
+  cdpKeySecret: string
+  /** CDP wallet secret (base64 DER EC P-256 PKCS8). */
+  cdpWalletSecret: string
+  /** CDP network. */
+  cdpNetwork: 'base-sepolia' | 'base'
   /** Capability mode of the alter session (applies to the next alter session created/resumed). */
   alterMode: AlterMode
 }
+
+export const DEFAULT_PAYGATE_PORT = 9001
 
 export const SOULMIRROR_SETTINGS_SCHEMA = z.object({
   relay: z.string().default(DEFAULT_RELAY).description('Relay URL (used when the identity is created).'),
@@ -53,7 +69,14 @@ export const SOULMIRROR_SETTINGS_SCHEMA = z.object({
   defaultTier: z.union([z.const('notify'), z.const('draft'), z.const('auto')]).default(DEFAULT_REPLY_TIER).description('Default reply tier for friends: notify = mail is only shown; draft = the alter drafts a reply you review on the SoulMirror page; auto = the alter replies by itself (rate-limited).'),
   autoReplyPerHour: z.number().default(DEFAULT_AUTO_REPLY_PER_HOUR).description('Maximum automatic replies per friend per hour in the auto tier (0 disables).'),
   directSend: z.boolean().default(false).description('Debug: offer "Send as myself" in a friend thread (bypasses the alter); off by default.'),
-  alterMode: z.union([z.const('comms'), z.const('full')]).default('comms').description('Alter capability: comms = SoulMirror-only preset (messages/groups); full = dsh standard preset (shell + filesystem, like a normal dsh session). Applies to the next alter session.'),
+  paygateBinary: z.string().default('').description('Path of the paygate binary (USDC payment gateway); empty = `paygate` on PATH.'),
+  paygatePort: z.number().default(DEFAULT_PAYGATE_PORT).description('Loopback port of the local payment gateway (default 9001).'),
+  paygateProxy: z.string().default('').description('Proxy for the gateway\'s Coinbase CDP calls, e.g. http://127.0.0.1:10808. Empty = direct (needed when your network blocks Coinbase).'),
+  cdpKeyId: z.string().default('').description('CDP API key ID (portal.cdp.coinbase.com/api-keys/secret). Empty = no CDP (manual-address mode: receive + pay manually).'),
+  cdpKeySecret: z.string().default('').description('CDP API key secret (from the downloaded cdp_api_key.json `privateKey`).'),
+  cdpWalletSecret: z.string().default('').description('CDP wallet secret (portal.cdp.coinbase.com/wallets/non-custodial/security; shown exactly once).'),
+  cdpNetwork: z.union([z.const('base-sepolia'), z.const('base')]).default('base-sepolia').description('CDP network: base-sepolia = testnet (recommended while testing), base = mainnet (real funds).'),
+  alterMode: z.union([z.const('comms'), z.const('full')]).default('comms').description('Alter capability: comms = SoulMirror-only preset (messages/groups); full = dsh standard preset (shell + filesystem, like a normal dsh session). Applies to the next alter session.')
 })
 
 /** Fill in defaults for a partial section (plugin config or a stored user section). */
@@ -61,6 +84,9 @@ export function resolveSettings(partial: Partial<SoulmirrorSettings> | undefined
   const perHour = typeof partial?.autoReplyPerHour === 'number' && Number.isFinite(partial.autoReplyPerHour)
     ? Math.max(0, Math.floor(partial.autoReplyPerHour))
     : DEFAULT_AUTO_REPLY_PER_HOUR
+  const port = typeof partial?.paygatePort === 'number' && Number.isFinite(partial.paygatePort) && partial.paygatePort > 0
+    ? Math.floor(partial.paygatePort)
+    : DEFAULT_PAYGATE_PORT
   return {
     relay: partial?.relay !== undefined && partial.relay.trim() !== '' ? partial.relay.trim() : DEFAULT_RELAY,
     displayName: partial?.displayName ?? '',
@@ -70,6 +96,13 @@ export function resolveSettings(partial: Partial<SoulmirrorSettings> | undefined
     defaultTier: normalizeTier(partial?.defaultTier),
     autoReplyPerHour: perHour,
     directSend: partial?.directSend === true,
+    paygateBinary: partial?.paygateBinary ?? '',
+    paygatePort: port,
+    paygateProxy: partial?.paygateProxy ?? '',
+    cdpKeyId: partial?.cdpKeyId ?? '',
+    cdpKeySecret: partial?.cdpKeySecret ?? '',
+    cdpWalletSecret: partial?.cdpWalletSecret ?? '',
+    cdpNetwork: partial?.cdpNetwork === 'base' ? 'base' : 'base-sepolia',
     alterMode: partial?.alterMode === 'full' ? 'full' : 'comms',
   }
 }

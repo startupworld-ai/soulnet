@@ -14,6 +14,7 @@ import { Button, IconCheckOutline14, IconCloseFill14, IconCopyOutline16, IconUse
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { api, networkStore, type ApiGroup, type ApiGroupInfo, type ApiGroupProfile } from './api.ts'
 import { canSpeakAs, DEFAULT_ROOM_KEY, encodeGroupUri, roleOf, roomKeyOf, type GroupRole, type RoomOwnerProps } from './group-room.ts'
+import { paidJoinFromRules, rulesWithoutPaidJoin } from '../group-contract.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { formatAge } from './inbox-state.ts'
 import { MemoryPane } from './MemoryPane.tsx'
@@ -49,8 +50,10 @@ const templateLabel = (t: Translate, id: string | undefined): string => {
     default: return id ?? ''
   }
 }
-const joinLabel = (t: Translate, join: ApiGroupProfile['join']): string =>
-  join === 'apply' ? t('group.form.join.apply') : join === 'open' ? t('group.form.join.open') : t('group.form.join.invite')
+const joinLabel = (t: Translate, join: ApiGroupProfile['join'] | 'paid', paid?: boolean): string =>
+  paid === true || join === 'paid'
+    ? t('group.form.join.paid')
+    : join === 'apply' ? t('group.form.join.apply') : join === 'open' ? t('group.form.join.open') : t('group.form.join.invite')
 const wakeLabel = (t: Translate, wake: ApiGroupProfile['agentWake']): string =>
   wake === 'always' ? t('group.form.wake.always') : wake === 'never' ? t('group.form.wake.never') : t('group.form.wake.mention')
 const tierLabel = (t: Translate, tier: ApiGroupProfile['agentTier']): string =>
@@ -72,7 +75,11 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
   const [inviteFp, setInviteFp] = useState('')
   const [copied, setCopied] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
-  const [edit, setEdit] = useState({ speakHumans: true, speakAgents: true, speakWho: 'all', join: 'invite', agentWake: 'mention', agentTier: 'draft', rules: '', isPublic: false, tags: '' })
+  const [walletAddress, setWalletAddress] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    void api.payWallet().then((r) => { setWalletAddress(r.wallet?.address) }).catch(() => {})
+  }, [])
+  const [edit, setEdit] = useState({ speakHumans: true, speakAgents: true, speakWho: 'all', join: 'invite', agentWake: 'mention', agentTier: 'draft', joinPrice: '', rules: '', isPublic: false, tags: '' })
   /** Two-step confirm for destructive actions (leave / kick): first click arms, second fires. */
   const [confirming, setConfirming] = useState<string | undefined>(undefined)
   const confirmThen = (key: string, action: () => void): void => {
@@ -184,7 +191,10 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
       speakHumans: profile?.speakHumans ?? true,
       speakAgents: profile?.speakAgents ?? true,
       speakWho: profile?.speakWho ?? 'all',
-      join: profile?.join ?? 'invite',
+      // Native join=paid takes precedence; the rules marker is a read-only
+      // legacy fallback for groups created before relays accepted join=paid.
+      join: profile?.join === 'paid' ? 'paid' : paidJoinFromRules(profile?.rules) !== undefined ? 'paid' : (profile?.join ?? 'invite'),
+      joinPrice: profile?.joinPrice ?? paidJoinFromRules(profile?.rules)?.price ?? '',
       agentWake: profile?.agentWake ?? 'mention',
       agentTier: profile?.agentTier ?? 'draft',
       rules: profile?.rules ?? '',
@@ -196,16 +206,31 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
 
   const saveProfile = (): void => {
     const tags = edit.tags.split(',').map(s => s.trim()).filter(s => s !== '')
+    // Paid join needs a price and a receiving wallet — validate before saving
+    // so the user gets a clear message instead of a silent no-op.
+    if (edit.join === 'paid' && edit.joinPrice.trim() === '') {
+      setError(t('group.form.join.paid.priceRequired'))
+      return
+    }
+    if (edit.join === 'paid' && edit.joinPrice.trim() !== '' && walletAddress === undefined) {
+      setError(t('group.form.join.paid.noWallet'))
+      return
+    }
     void run('profile.save', async () => {
       await api.groupSetProfile(gid, {
         ...(profile ?? {}),
         speakHumans: edit.speakHumans,
         speakAgents: edit.speakAgents,
         speakWho: edit.speakWho as NonNullable<ApiGroupProfile['speakWho']>,
+        // Native paid join (wire spec §14.7): join=paid + published
+        // join_price/join_addr (the relay must accept join=paid).
         join: edit.join as NonNullable<ApiGroupProfile['join']>,
         agentWake: edit.agentWake as NonNullable<ApiGroupProfile['agentWake']>,
         agentTier: edit.agentTier as NonNullable<ApiGroupProfile['agentTier']>,
         rules: edit.rules,
+        ...(edit.join === 'paid' && edit.joinPrice.trim() !== '' && walletAddress !== undefined
+          ? { joinPrice: edit.joinPrice.trim(), joinAddr: walletAddress }
+          : {}),
         public: edit.isPublic,
         tags,
       })
@@ -226,7 +251,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
 
   const chips: string[] = profile === undefined ? [] : [
     templateLabel(t, profile.template),
-    joinLabel(t, profile.join),
+    joinLabel(t, profile.join === 'paid' ? 'paid' : profile.join, profile.join === 'paid' ? true : paidJoinFromRules(profile.rules) !== undefined),
     whoLabel(t, profile.speakWho),
     `${t('group.form.wake')} · ${wakeLabel(t, profile.agentWake)}`,
     `${t('group.form.tier')} · ${tierLabel(t, profile.agentTier)}`,
@@ -291,12 +316,27 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
                   </label>
                   <label className="sm-field">
                     <span>{t('group.form.join')}</span>
-                    <select className="sm-select" value={edit.join} onChange={(e) => { setEdit({ ...edit, join: e.target.value }) }}>
+                    <select className="sm-select" value={edit.join} onChange={(e) => { setEdit({ ...edit, join: e.target.value, ...(e.target.value === 'paid' ? { isPublic: true } : {}) }) }}>
                       <option value="invite">{t('group.form.join.invite')}</option>
                       <option value="apply">{t('group.form.join.apply')}</option>
                       <option value="open">{t('group.form.join.open')}</option>
+                      <option value="paid" disabled={walletAddress === undefined && paidJoinFromRules(profile?.rules) === undefined}>{t('group.form.join.paid')}</option>
                     </select>
+                    {edit.join === 'paid' && !edit.isPublic
+                      ? <span style={{ fontSize: '0.82em' }}>{t('group.form.join.paid.autoPublic')}</span>
+                      : null}
                   </label>
+                  {edit.join === 'paid'
+                    ? (
+                      <label className="sm-field">
+                        <span>{t('group.form.joinPrice')}</span>
+                        <input className="sm-input" type="text" placeholder="1.00" value={edit.joinPrice} onChange={(e) => { setEdit({ ...edit, joinPrice: e.target.value }) }} data-soulmirror-group-edit-join-price />
+                        {edit.joinPrice.trim() === ''
+                          ? <span style={{ fontSize: '0.82em', color: 'rgb(220,80,60)' }} data-soulmirror-group-edit-paid-missing>{t('group.form.join.paid.priceRequired')}</span>
+                          : null}
+                      </label>
+                    )
+                    : null}
                   <label className="sm-field">
                     <span>{t('group.form.wake')}</span>
                     <select className="sm-select" value={edit.agentWake} onChange={(e) => { setEdit({ ...edit, agentWake: e.target.value }) }}>
@@ -347,8 +387,8 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
                       {chips.map((c, i) => <span key={`${c}-${i}`} className="sm-statepill">{c}</span>)}
                     </div>
                   )}
-                {profile?.rules !== undefined && profile.rules !== ''
-                  ? <div className="sm-home-rules" data-soulmirror-group-rules>{profile.rules}</div>
+                {profile?.rules !== undefined && rulesWithoutPaidJoin(profile.rules) !== ''
+                  ? <div className="sm-home-rules" data-soulmirror-group-rules>{rulesWithoutPaidJoin(profile.rules)}</div>
                   : null}
               </>
             )}

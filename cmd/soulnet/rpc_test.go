@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/startupworld-ai/soulnet/a2a"
 	"github.com/startupworld-ai/soulnet/peer"
 	"github.com/startupworld-ai/soulnet/relay"
 )
@@ -378,5 +379,49 @@ func TestStdinEOFStopsServe(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return after stdin was closed")
+	}
+}
+
+func TestIdentitySignRequest(t *testing.T) {
+	stashed = nil
+	rs, err := relay.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(rs.Handler())
+	defer hs.Close()
+
+	n, err := peer.Init(filepath.Join(t.TempDir(), "me"), hs.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, n)
+
+	// no identity yet → codeNoIdentity
+	if code := rpcErrCode(t, h.call(1, "identity.signRequest", map[string]any{"method": "POST", "path": "/v2/pay/wallet.create", "ts": time.Now().UTC().Format(time.RFC3339)})); code != codeNoIdentity {
+		t.Fatalf("expected %d, got %d", codeNoIdentity, code)
+	}
+	if _, err := n.EnsureIdentity("me"); err != nil {
+		t.Fatal(err)
+	}
+	// missing params → invalid params
+	if code := rpcErrCode(t, h.call(2, "identity.signRequest", map[string]any{"method": "POST"})); code != codeInvalidParams {
+		t.Fatalf("expected invalid params, got %d", code)
+	}
+	// happy path: signature verifies against the identity public key
+	res := result(t, h.call(3, "identity.signRequest", map[string]any{"method": "POST", "path": "/v2/pay/wallet.create", "ts": time.Now().UTC().Format(time.RFC3339)}))
+	sig := res["signature"].(string)
+	id := n.Identity()
+	pub, err := id.EdPublic()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// VerifyReq checks signature + timestamp skew; we can also verify directly.
+	fp, err := a2a.VerifyReq(a2a.EncodeKey(pub), "POST", "/v2/pay/wallet.create", time.Now().UTC().Format(time.RFC3339), sig)
+	if err != nil {
+		t.Fatalf("signature does not verify: %v", err)
+	}
+	if fp != id.Fingerprint() {
+		t.Fatalf("fingerprint mismatch: %s vs %s", fp, id.Fingerprint())
 	}
 }

@@ -10,9 +10,9 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Button, IconSendOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { api, networkStore, type ApiChatItem } from './api.ts'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
-import { networkStore, type ApiChatItem } from './api.ts'
 import type { AlterCardOwnerProps } from './alter-card.ts'
 import { ContentTabs } from './ContentTabs.tsx'
 import { DraftCard } from './DraftCard.tsx'
@@ -55,6 +55,18 @@ export function AlterPane({ t, onGoFriend, onGoGroup, renderCards, scope }: Alte
   const drafts = net.inbox.drafts
   const running = alter.status === 'running' || alter.chat.running || alter.instructing
   const [draft, setDraft] = useState('')
+  const [wallet, setWallet] = useState<{ address?: string; network?: string; balance_usdc?: string; balance_eth?: string } | null | undefined>(undefined)
+  // Refresh the wallet balance periodically so it stays current after a
+  // transfer settles on-chain (no manual refresh needed).
+  useEffect(() => {
+    let alive = true
+    const load = (): void => {
+      void api.payWallet().then((r) => { if (alive) setWallet(r.wallet ?? null) }).catch(() => { if (alive) setWallet(null) })
+    }
+    load()
+    const timer = setInterval(load, 15000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
   const scroller = useRef<HTMLDivElement>(null)
   const textarea = useRef<HTMLTextAreaElement>(null)
   const following = useRef(true)
@@ -287,6 +299,19 @@ export function AlterPane({ t, onGoFriend, onGoGroup, renderCards, scope }: Alte
           </div>
         </div>
       </header>
+      {wallet !== undefined && wallet !== null
+        ? (
+          <div className="sm-alter-wallet" data-soulmirror-alter-wallet style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', fontSize: '0.8em', opacity: 0.9, borderBottom: '1px solid rgba(127,127,127,.18)' }}>
+            <span style={{ opacity: 0.7 }}>{t('alter.wallet')}</span>
+            <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wallet.address} data-soulmirror-alter-wallet-address>{wallet.address}</span>
+            <span style={{ opacity: 0.85, whiteSpace: 'nowrap' }}>{wallet.balance_usdc !== undefined ? `USDC ${wallet.balance_usdc}` : ''}</span>
+            {wallet.balance_eth !== undefined
+              ? <span style={{ opacity: 0.6, whiteSpace: 'nowrap' }} data-soulmirror-alter-wallet-eth>ETH {Number(wallet.balance_eth).toFixed(4)}</span>
+              : null}
+          </div>
+        )
+        : null}
+
       <ContentTabs tabs={tabs} active={paneTab} onChange={pageStore.setPaneTab} t={t} />
       {paneTab === 'settings' ? alterSettings : paneTab === 'home' ? alterHome : paneTab === 'memory' ? <MemoryPane t={t} allow={{ global: true }} scope={{ kind: 'global' }} /> : <>
       {drafts.length > 0 && firstDraft !== undefined

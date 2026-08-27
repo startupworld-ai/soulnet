@@ -5,6 +5,7 @@ package peer
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -199,7 +200,7 @@ func TestGroupJoinFlows(t *testing.T) {
 	uri := a2a.EncodeGroupURI(gid, relayURL, "apply club")
 
 	dave := newTestNode(t, relayURL, "dave") // stranger: not a friend of alice
-	gotGid, err := dave.GroupApply(ctx, uri, "let me in")
+	gotGid, err := dave.GroupApply(ctx, uri, "let me in", nil)
 	if err != nil || gotGid != gid {
 		t.Fatalf("GroupApply: %q %v", gotGid, err)
 	}
@@ -230,7 +231,7 @@ func TestGroupJoinFlows(t *testing.T) {
 
 	// Reject path.
 	erin := newTestNode(t, relayURL, "erin")
-	if _, err := erin.GroupApply(ctx, uri, "me too"); err != nil {
+	if _, err := erin.GroupApply(ctx, uri, "me too", nil); err != nil {
 		t.Fatalf("erin GroupApply: %v", err)
 	}
 	alice.await(t, "erin's application lands", func(e Event) bool {
@@ -253,7 +254,7 @@ func TestGroupJoinFlows(t *testing.T) {
 	}
 	ouri := a2a.EncodeGroupURI(oview.GID, relayURL, "open club")
 	frank := newTestNode(t, relayURL, "frank")
-	if _, err := frank.GroupApply(ctx, ouri, ""); err != nil {
+	if _, err := frank.GroupApply(ctx, ouri, "", nil); err != nil {
 		t.Fatalf("frank GroupApply: %v", err)
 	}
 	waitUntil(t, "frank auto-joins the open group", func() bool { return frank.Groups.Get(oview.GID) != nil })
@@ -267,7 +268,7 @@ func TestGroupJoinFlows(t *testing.T) {
 	}
 	iuri := a2a.EncodeGroupURI(iview.GID, relayURL, "invite club")
 	grace := newTestNode(t, relayURL, "grace")
-	if _, err := grace.GroupApply(ctx, iuri, "please"); err != nil {
+	if _, err := grace.GroupApply(ctx, iuri, "please", nil); err != nil {
 		t.Fatalf("grace GroupApply: %v", err)
 	}
 	time.Sleep(1 * time.Second)
@@ -342,4 +343,119 @@ func TestGroupAdminInviteAndKick(t *testing.T) {
 		st := alice.Groups.Get(gid)
 		return st != nil && st.Roster.Member(carol.Fingerprint()) == nil
 	})
+}
+
+// TestGroupPaidJoin: a stranger pays (attaches a JoinPayment proof to the
+// group_join) and the owner's node pends the application with the payment
+// carried through, ready for the host to verify.
+func TestGroupPaidJoin(t *testing.T) {
+	relayURL := startRelay(t)
+	ctx := context.Background()
+	alice := newTestNode(t, relayURL, "alice")
+	bob := newTestNode(t, relayURL, "bob")
+	befriend(t, alice, bob)
+
+	prof := a2a.DefaultGroupProfile()
+	prof.Join = a2a.JoinPaid
+	prof.JoinPrice = "1.00"
+	prof.JoinAddr = "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29"
+	prof.Public = true
+	view, err := alice.GroupCreate(ctx, "paid club", []string{bob.Fingerprint()}, prof)
+	if err != nil {
+		t.Fatalf("GroupCreate: %v", err)
+	}
+	gid := view.GID
+	uri := a2a.EncodeGroupURI(gid, relayURL, "paid club")
+
+	dave := newTestNode(t, relayURL, "dave")
+	payment := &a2a.JoinPayment{
+		TxHash: "0xa13a28cb667919dc675d6401bcd6bd2329e8e6d612e8bbbfc1bf547602eec3c7",
+		Amount: "1.00",
+		To:     "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29",
+	}
+	if _, err := dave.GroupApply(ctx, uri, "paid, here is the tx", payment); err != nil {
+		t.Fatalf("paid GroupApply: %v", err)
+	}
+	appEv := alice.await(t, "paid application lands", func(e Event) bool { return e.Kind == EventGroupApplication && e.GID == gid })
+	if appEv.Message == nil || appEv.Message.Payment == nil || appEv.Message.Payment.TxHash != payment.TxHash {
+		t.Fatalf("application event lost the payment: %+v", appEv)
+	}
+	apps, err := alice.GroupApplications(gid)
+	if err != nil || len(apps) != 1 || apps[0].Payment == nil || apps[0].Payment.Amount != "1.00" || apps[0].Payment.To != payment.To {
+		t.Fatalf("application view missing payment: %+v %v", apps, err)
+	}
+	// owner approves after (host-side) verification
+	if err := alice.GroupApprove(ctx, gid, dave.Fingerprint()); err != nil {
+		t.Fatalf("GroupApprove: %v", err)
+	}
+	waitUntil(t, "dave holds the group", func() bool { return dave.Groups.Get(gid) != nil })
+}
+
+// TestGroupPaidJoinReplayRefused: the consumed-tx ledger is the replay guard —
+// after one applicant's payment tx admits them, a SECOND applicant submitting
+// the very same tx_hash as their own proof must be refused at approve time
+// (the tx is already consumed).
+func TestGroupPaidJoinReplayRefused(t *testing.T) {
+	relayURL := startRelay(t)
+	ctx := context.Background()
+	alice := newTestNode(t, relayURL, "alice")
+	bob := newTestNode(t, relayURL, "bob")
+	befriend(t, alice, bob)
+
+	prof := a2a.DefaultGroupProfile()
+	prof.Join = a2a.JoinPaid
+	prof.JoinPrice = "1.00"
+	prof.JoinAddr = "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29"
+	prof.Public = true
+	view, err := alice.GroupCreate(ctx, "paid club", []string{bob.Fingerprint()}, prof)
+	if err != nil {
+		t.Fatalf("GroupCreate: %v", err)
+	}
+	gid := view.GID
+	uri := a2a.EncodeGroupURI(gid, relayURL, "paid club")
+
+	dave := newTestNode(t, relayURL, "dave")
+	erin := newTestNode(t, relayURL, "erin")
+	// Both applicants attach the SAME on-chain transfer as their proof (the
+	// replay attack: browsing the chain and claiming someone else's payment).
+	payment := &a2a.JoinPayment{
+		TxHash: "0xa13a28cb667919dc675d6401bcd6bd2329e8e6d612e8bbbfc1bf547602eec3c7",
+		Amount: "1.00",
+		To:     "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29",
+	}
+	if _, err := dave.GroupApply(ctx, uri, "paid", payment); err != nil {
+		t.Fatalf("dave GroupApply: %v", err)
+	}
+	if _, err := erin.GroupApply(ctx, uri, "paid too", payment); err != nil {
+		t.Fatalf("erin GroupApply: %v", err)
+	}
+	alice.await(t, "dave application lands", func(e Event) bool {
+		return e.Kind == EventGroupApplication && e.GID == gid && e.Peer == dave.Fingerprint()
+	})
+	alice.await(t, "erin application lands", func(e Event) bool {
+		return e.Kind == EventGroupApplication && e.GID == gid && e.Peer == erin.Fingerprint()
+	})
+
+	// First approve consumes the tx and admits dave.
+	if err := alice.GroupApprove(ctx, gid, dave.Fingerprint()); err != nil {
+		t.Fatalf("first GroupApprove: %v", err)
+	}
+	waitUntil(t, "dave holds the group", func() bool { return dave.Groups.Get(gid) != nil })
+
+	// The second approve reuses the same tx_hash — it must be refused.
+	err = alice.GroupApprove(ctx, gid, erin.Fingerprint())
+	if err == nil {
+		t.Fatal("replayed payment tx must be refused at approve")
+	}
+	if !errors.Is(err, ErrPaidProofUsed) {
+		t.Fatalf("expected ErrPaidProofUsed, got %v", err)
+	}
+	// Erin is NOT admitted, and the application stays pending for a real proof.
+	if st := erin.Groups.Get(gid); st != nil {
+		t.Fatal("erin must not be admitted with a replayed tx")
+	}
+	apps, err := alice.GroupApplications(gid)
+	if err != nil || len(apps) != 1 || apps[0].Fp != erin.Fingerprint() {
+		t.Fatalf("erin's application should still be pending: %+v %v", apps, err)
+	}
 }

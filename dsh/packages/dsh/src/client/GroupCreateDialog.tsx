@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 import { Button, IconCloseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ApiGroupProfile } from './api.ts'
 import { GROUP_TEMPLATES, templateProfile } from './group-templates.ts'
+
 import type { InboxFriend } from './inbox-state.ts'
 import type { Translate } from './translate.ts'
 
@@ -17,11 +18,13 @@ export interface GroupCreateDialogProps {
   t: Translate
   friends: readonly InboxFriend[]
   busy: boolean
+  /** The owner's wallet address; undefined = no wallet yet (paid join disabled). */
+  walletAddress?: string
   onCreate: (name: string, members: string[], profile: ApiGroupProfile) => void
   onClose: () => void
 }
 
-export function GroupCreateDialog({ t, friends, busy, onCreate, onClose }: GroupCreateDialogProps) {
+export function GroupCreateDialog({ t, friends, busy, walletAddress, onCreate, onClose }: GroupCreateDialogProps) {
   const std = GROUP_TEMPLATES[0]!.profile
   const [name, setName] = useState('')
   const [sel, setSel] = useState<Record<string, boolean>>({})
@@ -34,6 +37,7 @@ export function GroupCreateDialog({ t, friends, busy, onCreate, onClose }: Group
     speakAgents: std.speakAgents,
     speakWho: std.speakWho ?? 'all',
     join: std.join ?? 'invite',
+    joinPrice: '',
     agentWake: std.agentWake ?? 'mention',
     agentTier: std.agentTier ?? 'draft',
     rules: '',
@@ -51,19 +55,25 @@ export function GroupCreateDialog({ t, friends, busy, onCreate, onClose }: Group
   }, [onClose])
 
   const members = Object.entries(sel).filter(([, v]) => v).map(([k]) => k)
-  const ready = !busy && name.trim() !== '' && members.length > 0
+  // Paid join needs a wallet AND a price; without them the group cannot be paid.
+  const paidIncomplete = adv.join === 'paid' && (walletAddress === undefined || adv.joinPrice.trim() === '')
+  const ready = !busy && name.trim() !== '' && members.length > 0 && !paidIncomplete
 
   const submit = (): void => {
     if (!ready) return
     const tags = adv.tags.split(',').map(s => s.trim()).filter(s => s !== '')
+    const paid = adv.join === 'paid' && walletAddress !== undefined && adv.joinPrice.trim() !== ''
     const profile = templateProfile(tpl, {
       speakHumans: adv.speakHumans,
       speakAgents: adv.speakAgents,
       speakWho: adv.speakWho,
+      // Native paid join (wire spec §14.7): join=paid + published
+      // join_price/join_addr (the relay must accept join=paid).
       join: adv.join,
       agentWake: adv.agentWake,
       agentTier: adv.agentTier,
       ...(adv.rules.trim() === '' ? {} : { rules: adv.rules }),
+      ...(paid ? { joinPrice: adv.joinPrice.trim(), joinAddr: walletAddress } : {}),
       ...(adv.isPublic ? { public: true } : {}),
       ...(tags.length === 0 ? {} : { tags }),
     })
@@ -137,12 +147,37 @@ export function GroupCreateDialog({ t, friends, busy, onCreate, onClose }: Group
                 </label>
                 <label className="sm-field">
                   <span>{t('group.form.join')}</span>
-                  <select className="sm-select" value={adv.join} onChange={(e) => { setAdv({ ...adv, join: e.target.value as typeof adv.join }) }}>
+                  <select className="sm-select" value={adv.join} onChange={(e) => { setAdv({ ...adv, join: e.target.value as typeof adv.join, ...(e.target.value === 'paid' ? { isPublic: true } : {}) }) }}>
                     <option value="invite">{t('group.form.join.invite')}</option>
                     <option value="apply">{t('group.form.join.apply')}</option>
                     <option value="open">{t('group.form.join.open')}</option>
+                    <option value="paid" disabled={walletAddress === undefined}>{t('group.form.join.paid')}{walletAddress === undefined ? `（${t('group.form.join.paid.noWallet')}）` : ''}</option>
                   </select>
+                  {adv.join === 'paid' && !adv.isPublic
+                    ? <p style={{ fontSize: '0.82em', margin: 0 }}>{t('group.form.join.paid.autoPublic')}</p>
+                    : null}
                 </label>
+                {adv.join === 'paid'
+                  ? (
+                    <>
+                      <label className="sm-field">
+                        <span>{t('group.form.joinPrice')}</span>
+                        <input className="sm-input" type="text" placeholder="1.00" value={adv.joinPrice} disabled={walletAddress === undefined} onChange={(e) => { setAdv({ ...adv, joinPrice: e.target.value }) }} data-soulmirror-group-create-join-price />
+                      </label>
+                      {paidIncomplete && adv.joinPrice.trim() === ''
+                        ? <p style={{ fontSize: '0.82em', margin: 0, color: 'rgb(220,80,60)' }} data-soulmirror-group-create-paid-missing>{t('group.form.join.paid.priceRequired')}</p>
+                        : null}
+                      <p style={{ fontSize: '0.82em', opacity: 0.7, margin: 0 }}>
+                        {walletAddress === undefined
+                          ? t('group.form.join.paid.noWalletHint')
+                          : t('group.form.joinAddr', { address: walletAddress })}
+                      </p>
+                      <p style={{ fontSize: '0.82em', opacity: 0.7, margin: 0 }} data-soulmirror-group-create-paid-hint>
+                        {t('group.form.join.paid.membersFree')}
+                      </p>
+                    </>
+                  )
+                  : null}
                 <label className="sm-field">
                   <span>{t('group.form.wake')}</span>
                   <select className="sm-select" value={adv.agentWake} onChange={(e) => { setAdv({ ...adv, agentWake: e.target.value as typeof adv.agentWake }) }}>

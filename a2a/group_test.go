@@ -1,6 +1,8 @@
 package a2a
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -473,5 +475,50 @@ func TestGroupPinsAndApplicationsStore(t *testing.T) {
 	}
 	if err := s.PutApplication(gid, nil); err == nil {
 		t.Fatalf("nil application accepted")
+	}
+}
+
+func TestGroupProfilePaidJoinValidation(t *testing.T) {
+	valid := &GroupProfile{Join: JoinPaid, JoinPrice: "1.00", JoinAddr: "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29", SpeakHumans: true, SpeakAgents: true}
+	if err := valid.Validate(nil); err != nil {
+		t.Fatalf("valid paid profile rejected: %v", err)
+	}
+	cases := []struct {
+		name string
+		p    *GroupProfile
+	}{
+		{"missing price", &GroupProfile{Join: JoinPaid, JoinAddr: "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29", SpeakHumans: true, SpeakAgents: true}},
+		{"zero price", &GroupProfile{Join: JoinPaid, JoinPrice: "0", JoinAddr: "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29", SpeakHumans: true, SpeakAgents: true}},
+		{"bad price", &GroupProfile{Join: JoinPaid, JoinPrice: "abc", JoinAddr: "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29", SpeakHumans: true, SpeakAgents: true}},
+		{"too many decimals", &GroupProfile{Join: JoinPaid, JoinPrice: "1.0000001", JoinAddr: "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29", SpeakHumans: true, SpeakAgents: true}},
+		{"missing addr", &GroupProfile{Join: JoinPaid, JoinPrice: "1.00", SpeakHumans: true, SpeakAgents: true}},
+		{"bad addr", &GroupProfile{Join: JoinPaid, JoinPrice: "1.00", JoinAddr: "0x1234"}},
+	}
+	for _, c := range cases {
+		if err := c.p.Validate(nil); err == nil {
+			t.Fatalf("%s: expected validation error", c.name)
+		}
+	}
+	// non-paid groups may omit the price fields
+	if err := (&GroupProfile{Join: JoinApply, SpeakHumans: true, SpeakAgents: true}).Validate(nil); err != nil {
+		t.Fatalf("apply group rejected: %v", err)
+	}
+}
+
+func TestJoinPaymentRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	s := NewGroupStore(dir)
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	card := &Card{EdPub: EncodeKey(priv.Public().(ed25519.PublicKey)), XPub: "y", Name: "applicant", Sig: "z"}
+	app := &GroupApplication{
+		Card: card, Note: "paid", TS: time.Now(),
+		Payment: &JoinPayment{TxHash: "0xabc", Amount: "1.00", To: "0x2e0c37b721124e2558baf75f6f8e6cc9f14aec29"},
+	}
+	if err := s.PutApplication("gid1", app); err != nil {
+		t.Fatal(err)
+	}
+	apps := s.Applications("gid1")
+	if len(apps) != 1 || apps[0].Payment == nil || apps[0].Payment.TxHash != "0xabc" || apps[0].Payment.Amount != "1.00" {
+		t.Fatalf("payment not round-tripped: %+v", apps)
 	}
 }

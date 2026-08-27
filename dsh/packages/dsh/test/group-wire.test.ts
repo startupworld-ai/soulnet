@@ -50,6 +50,24 @@ describe('profileToWire', () => {
     }
     expect(profileFromWire(profileToWire(p))).toEqual(p)
   })
+
+  it('maps native paid join (join=paid + join_price/join_addr) both ways', () => {
+    const p: GroupProfile = {
+      speakHumans: true, speakAgents: true, join: 'paid',
+      joinPrice: '0.1', joinAddr: '0xD5D21E129B422491cfF103bA875c60dabec02899',
+      public: true, rules: 'be kind',
+    }
+    const wire = profileToWire(p)
+    expect(wire['join']).toBe('paid')
+    expect(wire['join_price']).toBe('0.1')
+    expect(wire['join_addr']).toBe('0xD5D21E129B422491cfF103bA875c60dabec02899')
+    // native values survive the round trip (no rules-marker encoding needed)
+    const back = profileFromWire(wire)
+    expect(back?.join).toBe('paid')
+    expect(back?.joinPrice).toBe('0.1')
+    expect(back?.joinAddr).toBe('0xD5D21E129B422491cfF103bA875c60dabec02899')
+    expect(back?.rules).toBe('be kind')
+  })
 })
 
 describe('groupFromWire / groupInfoFromWire', () => {

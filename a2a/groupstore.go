@@ -238,6 +238,9 @@ type GroupApplication struct {
 	Card *Card     `json:"card"`
 	Note string    `json:"note,omitempty"`
 	TS   time.Time `json:"ts"`
+	// Payment is the paid-join proof (join policy "paid"), passed through from
+	// the group_join message; nil for invite/apply joins.
+	Payment *JoinPayment `json:"payment,omitempty"`
 }
 
 func (s *GroupStore) appsDir(gid string) string { return filepath.Join(s.dir(gid), "applications") }
@@ -296,4 +299,57 @@ func (s *GroupStore) RemoveApplication(gid, fp string) error {
 		return nil
 	}
 	return err
+}
+
+// ——— Paid-join consumed-tx ledger (groups/<gid>/consumed-tx.json, owner's node) ———
+
+// ConsumePaymentTx atomically claims one on-chain payment for one group: the
+// first caller gets true, any later caller for the same tx_hash gets false.
+// This is the replay guard — a single USDC transfer admits exactly one member,
+// so an applicant cannot reuse their own (or anyone else's) tx_hash for a
+// second admission. Claims are made at approve time, only when a member is
+// actually admitted.
+func (s *GroupStore) ConsumePaymentTx(gid, txHash string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	consumed := s.consumedTx(gid)
+	if consumed[txHash] {
+		return false, nil
+	}
+	consumed[txHash] = true
+	return true, s.writeConsumedTx(gid, consumed)
+}
+
+// consumedTx loads the group's consumed-tx set (caller holds s.mu).
+func (s *GroupStore) consumedTx(gid string) map[string]bool {
+	raw, err := os.ReadFile(filepath.Join(s.dir(gid), "consumed-tx.json"))
+	if err != nil {
+		return map[string]bool{}
+	}
+	var list []string
+	if json.Unmarshal(raw, &list) != nil {
+		return map[string]bool{}
+	}
+	out := make(map[string]bool, len(list))
+	for _, h := range list {
+		out[h] = true
+	}
+	return out
+}
+
+// writeConsumedTx persists the consumed-tx set as a sorted list (caller holds s.mu).
+func (s *GroupStore) writeConsumedTx(gid string, consumed map[string]bool) error {
+	list := make([]string, 0, len(consumed))
+	for h := range consumed {
+		list = append(list, h)
+	}
+	sort.Strings(list)
+	raw, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.dir(gid), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir(gid), "consumed-tx.json"), raw, 0o644)
 }

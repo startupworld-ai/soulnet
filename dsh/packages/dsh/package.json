@@ -93,6 +93,11 @@
     "react": "^18.2.0"
   },
   "optionalDependencies": {
+    "soulnet-paygate-darwin-arm64": "workspace:*",
+    "soulnet-paygate-darwin-x64": "workspace:*",
+    "soulnet-paygate-linux-arm64": "workspace:*",
+    "soulnet-paygate-linux-x64": "workspace:*",
+    "soulnet-paygate-windows-x64": "workspace:*",
     "soulnet-peer-darwin-arm64": "workspace:*",
     "soulnet-peer-darwin-x64": "workspace:*",
     "soulnet-peer-linux-arm64": "workspace:*",

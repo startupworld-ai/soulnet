@@ -67,14 +67,14 @@ jobs:
           path: |
             dsh/dist/*.tgz
             dsh/dist/release/*
-      - name: publish the five platform packages, then the plugin
+      - name: publish the peer + paygate platform packages, then the plugin
         if: env.DRY_RUN != 'true'
         working-directory: dsh
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: ${{ vars.NPM_PROVENANCE == 'true' && 'true' || 'false' }}
         run: |
-          for dir in packages/soulnet-win32-x64 packages/soulnet-darwin-arm64 packages/soulnet-darwin-x64 packages/soulnet-linux-x64 packages/soulnet-linux-arm64 packages/dsh; do
+          for dir in packages/soulnet-win32-x64 packages/soulnet-darwin-arm64 packages/soulnet-darwin-x64 packages/soulnet-linux-x64 packages/soulnet-linux-arm64 packages/soulnet-paygate-win32-x64 packages/soulnet-paygate-darwin-arm64 packages/soulnet-paygate-darwin-x64 packages/soulnet-paygate-linux-x64 packages/soulnet-paygate-linux-arm64 packages/dsh; do
             name=$(node -p "require('./$dir/package.json').name")
             ver=$(node -p "require('./$dir/package.json').version")
             # Idempotent: releases are sometimes published by hand first and the

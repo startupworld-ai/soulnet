@@ -29,6 +29,13 @@ export interface SoulmirrorSettingsValues {
   defaultTier?: ReplyTier
   autoReplyPerHour?: number
   directSend?: boolean
+  paygateBinary?: string
+  paygatePort?: number
+  paygateProxy?: string
+  cdpKeyId?: string
+  cdpKeySecret?: string
+  cdpWalletSecret?: string
+  cdpNetwork?: string
   /** 'comms' = SoulMirror-only preset; 'full' = dsh standard preset (shell/files). */
   alterMode?: 'comms' | 'full'
 }
@@ -81,6 +88,60 @@ export function CardBlock({ cardUri, home, t }: { cardUri: string; home: string;
   )
 }
 
+
+export function WalletBlock({ t }: { t: SoulmirrorSettingsProps['t'] }) {
+  const [copied, copy] = useCopy()
+  const [wallet, setWallet] = useState<{ address?: string; network?: string; balance_usdc?: string; balance_eth?: string } | null | undefined>(undefined)
+  const [err, setErr] = useState<string | undefined>(undefined)
+  const refresh = useCallback(() => {
+    void api.payWallet().then((r) => {
+      setWallet(r.wallet ?? null)
+      setErr(r.error)
+    }).catch(() => { setWallet(null) })
+  }, [])
+  useEffect(() => {
+    refresh()
+    // Keep the balance current after transfers settle on-chain.
+    const timer = setInterval(refresh, 15000)
+    return () => { clearInterval(timer) }
+  }, [refresh])
+  return (
+    <div style={card} data-soulmirror-wallet-block>
+      <h4 style={h4}>{t('settings.wallet')}</h4>
+      {wallet === undefined
+        ? <p style={small}>{t('settings.wallet.loading')}</p>
+        : wallet === null
+          ? (
+            <>
+              <p style={small}>{err !== undefined ? err : t('settings.wallet.none')}</p>
+              <div style={rowStyle}>
+                <button type="button" onClick={refresh} data-soulmirror-wallet-refresh>{t('settings.wallet.refresh')}</button>
+              </div>
+            </>
+          )
+          : (
+            <>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <div style={rowStyle}>
+                  <span style={{ opacity: 0.8, fontSize: '0.82em' }}>{t('settings.wallet.address')}</span>
+                  {wallet.network !== undefined ? <span style={{ ...small, fontSize: '0.75em' }}>{wallet.network}</span> : null}
+                </div>
+                <div style={mono} data-soulmirror-wallet-address>{wallet.address}</div>
+                <div style={rowStyle}>
+                  <button type="button" onClick={() => { void copy(wallet.address ?? '') }}>{copied ? t('settings.card.copied') : t('settings.card.copy')}</button>
+                  <button type="button" onClick={refresh} data-soulmirror-wallet-refresh>{t('settings.wallet.refresh')}</button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 2 }}>
+                  <span style={small}>{t('settings.wallet.balanceUsdc')}: <strong>{wallet.balance_usdc ?? '—'}</strong></span>
+                  <span style={small}>{t('settings.wallet.balanceEth')}: <strong>{wallet.balance_eth ?? '—'}</strong></span>
+                </div>
+              </div>
+            </>
+          )}
+    </div>
+  )
+}
+
 function SettingField({ label, field, scope, values, user, writable, type = 'text', options, optionLabel, min }: {
   label: string
   field: keyof SoulmirrorSettingsValues
@@ -88,7 +149,7 @@ function SettingField({ label, field, scope, values, user, writable, type = 'tex
   values: SoulmirrorSettingsValues | undefined
   user: Record<string, unknown>
   writable: boolean
-  type?: 'text' | 'select' | 'number'
+  type?: 'text' | 'password' | 'select' | 'number'
   options?: readonly string[]
   optionLabel?: (option: string) => string
   min?: number
@@ -111,7 +172,7 @@ function SettingField({ label, field, scope, values, user, writable, type = 'tex
             {(options ?? []).map(o => <option key={o} value={o}>{optionLabel === undefined ? o : optionLabel(o)}</option>)}
           </select>
         )
-        : <input style={input} type={type === 'number' ? 'number' : 'text'} min={min} value={draft} disabled={!writable} onChange={e => { setDraft(e.target.value) }} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') commit() }} data-soulmirror-setting={field} />}
+        : <input style={input} type={type === 'password' ? 'password' : (type === 'number' ? 'number' : 'text')} min={min} value={draft} disabled={!writable} onChange={e => { setDraft(e.target.value) }} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') commit() }} data-soulmirror-setting={field} />}
     </label>
   )
 }
@@ -290,6 +351,21 @@ export function SoulmirrorSettingsSection({ scope, t }: SoulmirrorSettingsProps)
           <input type="checkbox" checked={directSend} disabled={!writable} onChange={(e) => { void scope.set('directSend', e.target.checked).catch(() => {}) }} data-soulmirror-setting="directSend" />
           <span>{t('settings.alter.directSend')}</span>
         </label>
+      </div>
+
+      <WalletBlock t={t} />
+
+      <div style={card} data-soulmirror-settings-pay>
+        <h4 style={h4}>{t('settings.pay')}</h4>
+        <p style={small}>{t('settings.pay.intro')}</p>
+        <SettingField label={t('settings.pay.cdpKeyId')} field="cdpKeyId" scope={scope} values={settings.value} user={userLayer} writable={writable} />
+        <SettingField label={t('settings.pay.cdpKeySecret')} field="cdpKeySecret" scope={scope} values={settings.value} user={userLayer} writable={writable} type="password" />
+        <SettingField label={t('settings.pay.cdpWalletSecret')} field="cdpWalletSecret" scope={scope} values={settings.value} user={userLayer} writable={writable} type="password" />
+        <SettingField label={t('settings.pay.cdpNetwork')} field="cdpNetwork" scope={scope} values={settings.value} user={userLayer} writable={writable} type="select" options={['base-sepolia', 'base']} />
+        <SettingField label={t('settings.pay.paygateProxy')} field="paygateProxy" scope={scope} values={settings.value} user={userLayer} writable={writable} />
+        <SettingField label={t('settings.pay.paygateBinary')} field="paygateBinary" scope={scope} values={settings.value} user={userLayer} writable={writable} />
+        <SettingField label={t('settings.pay.paygatePort')} field="paygatePort" scope={scope} values={settings.value} user={userLayer} writable={writable} type="number" min={1} />
+        <p style={small}>{t('settings.pay.hint')}</p>
       </div>
 
 

@@ -88,10 +88,25 @@ for (const target of wanted) {
     process.exit(1)
   }
   goBuild(target, './cmd/soulnet', join(pkgDir, 'bin', `soulnet${target.exe}`))
+
+  // The local payment gateway (paygate) rides the same platform packages:
+  // <pkg>/bin/paygate[.exe] is resolved by the plugin when CDP is configured.
+  const paygatePkgDir = join(dshDir, 'packages', `soulnet-paygate-${target.id}`)
+  if (existsSync(join(paygatePkgDir, 'package.json'))) {
+    const paygateVersion = JSON.parse(readFileSync(join(paygatePkgDir, 'package.json'), 'utf8')).version
+    if (paygateVersion !== version) {
+      console.error(`version mismatch: ${paygatePkgDir} is ${paygateVersion}, plugin is ${version}`)
+      process.exit(1)
+    }
+    goBuild(target, './payment/cmd/paygate', join(paygatePkgDir, 'bin', `paygate${target.exe}`))
+  } else {
+    console.warn(`skipping paygate for ${target.id}: no ${paygatePkgDir}`)
+  }
   if (assetsDir !== undefined && assetsDir !== '') {
     const dir = resolve(process.cwd(), assetsDir)
     goBuild(target, './cmd/soulnet', join(dir, `soulnet-${target.id}${target.exe}`))
     goBuild(target, './cmd/soulnet-relay', join(dir, `soulnet-relay-${target.id}${target.exe}`))
+    goBuild(target, './payment/cmd/paygate', join(dir, `soulnet-paygate-${target.id}${target.exe}`))
   }
 }
 

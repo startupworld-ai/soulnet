@@ -215,7 +215,7 @@ Note: the time in the signing string is **UTC, RFC3339Nano, trailing zeros remov
 | `share` | AppShare, omitempty | `app_share` payload |
 | `quote_mission` | string, omitempty | mission ID quoted by a plain text message (the alter writes a `[[task:ID]]` marker; it is parsed and stripped before sending) |
 
-*[added 2026-08-24]* Group fields: `gid` (string, omitempty — set on every group message and on pairwise `group_invite` / `group_key` / `group_leave` / `group_update`), `group` (GroupRoster, omitempty — the signed roster in `group_invite`), `gkey` (`{epoch, chain}`, omitempty — the sender chain in `group_key`), `by` (string, omitempty — post provenance `owner`\|`alter`, "" = owner; §14.7), `pin_remove` (string, omitempty — pin id to remove, `group_pin` only). See §14.
+*[added 2026-08-24]* Group fields: `gid` (string, omitempty — set on every group message and on pairwise `group_invite` / `group_key` / `group_leave` / `group_update`), `group` (GroupRoster, omitempty — the signed roster in `group_invite`), `gkey` (`{epoch, chain}`, omitempty — the sender chain in `group_key`), `by` (string, omitempty — post provenance `owner`\|`alter`, "" = owner; §14.7), `pin_remove` (string, omitempty — pin id to remove, `group_pin` only). *[added 2026-08-26]* `payment` (`{tx_hash, amount, to, note?}`, omitempty — paid-join proof on a `group_join` when the group's join policy is `paid`; §14.7). See §14.
 
 `TaskSummary`: `{mission_id, title?, goal, acceptance[], budget(int), deadline?, status}` (`?` = omitempty).
 `AppShare`: `{action: "granted"|"revoked", app, app_title?, tunnel_url?}`; `granted` must carry `tunnel_url`.
@@ -614,7 +614,7 @@ Reuses the §4.1 `Envelope` with `gid` set and `to` EMPTY at signing time. Signi
 | `group_leave` | member → owner | `gid` | owner republishes the roster without the sender (version+1), rekeys, fans a `group_update` and pokes the leaver pairwise |
 | `group_update` | owner → anyone | `gid` (also fanned out inside the group) | refetch the roster from the relay; removals → rekey; my own removal (or a 403 on fetch) → forget the group locally (archive kept) |
 
-*[added 2026-08-24]* Governance-era control messages (§14.7): `group_pin` (fan-out, owner/admin only: body = pin text, or `pin_remove` = pin message id to unpin; lands on the group home, never the chat stream), `group_join` (pairwise, stranger → owner: application to join — body = note, `card` = applicant card; the owner's node drops it on `join: invite`, adds mechanically on `open`, stores it for approval on `apply`), `group_admin` (pairwise, admin → owner: body `"invite"` with `card` = invitee, or `"kick <fp>"`; the owner's node validates the sender against `profile.admins` and executes mechanically).
+*[added 2026-08-24]* Governance-era control messages (§14.7): `group_pin` (fan-out, owner/admin only: body = pin text, or `pin_remove` = pin message id to unpin; lands on the group home, never the chat stream), `group_join` (pairwise, stranger → owner: application to join — body = note, `card` = applicant card, `payment` = paid-join proof when the group's join policy is `paid`; the owner's node drops it on `join: invite`, adds mechanically on `open`, stores it for approval on `apply`/`paid`), `group_admin` (pairwise, admin → owner: body `"invite"` with `card` = invitee, or `"kick <fp>"`; the owner's node validates the sender against `profile.admins` and executes mechanically). For `join: paid` the owner's host verifies `payment` against the public chain (recipient == `join_addr`, amount ≥ `join_price`) before approving.
 
 Pairwise `group_*` envelopes carry `from_xpub` (like handshakes): the receiver may hold no card of a co-member. Conversely a receiver may resolve a non-friend sender's card from any stored roster.
 
@@ -645,7 +645,10 @@ keep their exact signing bytes) and means "everything allowed, chat room, invite
 | `room` | string | room application id; ""/`chat` = built-in chat room |
 | `speak_humans` / `speak_agents` | bool | may humans (`by:owner`) / alters (`by:alter`) post; at least one must be true |
 | `speak_who` | string | which members may post: `all` \| `owner` \| `admins` ("" = all) |
-| `join` | string | `invite` \| `apply` \| `open` ("" = invite) |
+| `join` | string | `invite` \| `apply` \| `open` \| `paid` ("" = invite) |
+| `join_price` | string | paid-join price in USDC decimal (e.g. `"1.00"`); required when `join = paid` |
+| `join_addr` | string | paid-join receiving address (`0x`, Base); required when `join = paid` |
+| `join_note` | string | payment instruction shown to applicants (display only) |
 | `agent_wake` | string | when a member's alter wakes on traffic: `mention` \| `always` \| `never` ("" = mention) |
 | `agent_tier` | string | default alter reply tier here: `notify` \| `draft` \| `auto` ("" = draft) |
 | `auto_per_hour` | int | cap on one alter's automatic posts per hour (0 = default 10) |

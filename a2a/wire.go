@@ -77,6 +77,10 @@ type Message struct {
 	Auto bool `json:"auto,omitempty"`
 	// Card carries the sender's card in friend_request / friend_accept so the peer can create a record.
 	Card *Card `json:"card,omitempty"`
+	// Payment carries the paid-join proof on a group_join (join policy "paid"):
+	// the on-chain USDC transfer hash + amount + recipient the applicant paid.
+	// Only present on group_join; verified by the group owner's node before approval.
+	Payment *JoinPayment `json:"payment,omitempty"`
 	// Attachment: any message may carry one file (tables / reports the alter produced after finishing a job).
 	// Artifact is the file content in base64 (≤ relay cap; cleared once written to disk so the jsonl does not bloat).
 	Artifact     string `json:"artifact,omitempty"`

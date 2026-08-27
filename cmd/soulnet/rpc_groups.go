@@ -216,10 +216,9 @@ func (s *Server) groupUnpin(ctx context.Context, params json.RawMessage) (any, e
 	return map[string]any{"ok": true}, s.n.GroupUnpin(ctx, p.GID, p.ID)
 }
 
-func (s *Server) groupApply(ctx context.Context, params json.RawMessage) (any, error) {
+func (s *Server) groupLookup(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
-		URI  string `json:"uri"`
-		Note string `json:"note"`
+		URI string `json:"uri"`
 	}
 	if err := decode(params, &p); err != nil {
 		return nil, err
@@ -227,7 +226,26 @@ func (s *Server) groupApply(ctx context.Context, params json.RawMessage) (any, e
 	if strings.TrimSpace(p.URI) == "" {
 		return nil, invalid("uri must not be empty")
 	}
-	gid, err := s.n.GroupApply(ctx, p.URI, p.Note)
+	card, err := s.n.GroupLookup(ctx, p.URI)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"card": card}, nil
+}
+
+func (s *Server) groupApply(ctx context.Context, params json.RawMessage) (any, error) {
+	var p struct {
+		URI     string           `json:"uri"`
+		Note    string           `json:"note"`
+		Payment *a2a.JoinPayment `json:"payment,omitempty"`
+	}
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(p.URI) == "" {
+		return nil, invalid("uri must not be empty")
+	}
+	gid, err := s.n.GroupApply(ctx, p.URI, p.Note, p.Payment)
 	if err != nil {
 		return nil, err
 	}

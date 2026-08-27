@@ -110,6 +110,21 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)
     optionalDependencies:
+      soulnet-paygate-darwin-arm64:
+        specifier: workspace:*
+        version: link:../soulnet-paygate-darwin-arm64
+      soulnet-paygate-darwin-x64:
+        specifier: workspace:*
+        version: link:../soulnet-paygate-darwin-x64
+      soulnet-paygate-linux-arm64:
+        specifier: workspace:*
+        version: link:../soulnet-paygate-linux-arm64
+      soulnet-paygate-linux-x64:
+        specifier: workspace:*
+        version: link:../soulnet-paygate-linux-x64
+      soulnet-paygate-windows-x64:
+        specifier: workspace:*
+        version: link:../soulnet-paygate-win32-x64
       soulnet-peer-darwin-arm64:
         specifier: workspace:*
         version: link:../soulnet-darwin-arm64
@@ -175,6 +190,16 @@ importers:
   packages/soulnet-linux-arm64: {}
 
   packages/soulnet-linux-x64: {}
+
+  packages/soulnet-paygate-darwin-arm64: {}
+
+  packages/soulnet-paygate-darwin-x64: {}
+
+  packages/soulnet-paygate-linux-arm64: {}
+
+  packages/soulnet-paygate-linux-x64: {}
+
+  packages/soulnet-paygate-win32-x64: {}
 
   packages/soulnet-win32-x64: {}
 

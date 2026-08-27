@@ -181,6 +181,7 @@ export function createFakeNetworkClient(options: FakeOptions = {}): NetworkClien
     backend: 'fake',
     status: () => status,
     identity: () => Promise.resolve(identity),
+    signRequest: () => Promise.reject(new NetworkError('identity.signRequest is not supported by the fake backend (use the soulnet peer)', -32603)),
     createIdentity: (name) => {
       if (identity !== undefined) return Promise.reject(new NetworkError('identity already exists', NetworkErrorCode.identityExists))
       identity = { fp: fp('fp-me-0000aaaabbbbcccc'), name, cardUri: `soulmirror://card?v=1&pk=FAKE&xpk=FAKE&name=${encodeURIComponent(name)}` }
@@ -191,6 +192,14 @@ export function createFakeNetworkClient(options: FakeOptions = {}): NetworkClien
       if (!uri.startsWith('soulmirror://card')) return Promise.reject(new NetworkError('invalid card link', NetworkErrorCode.badCard))
       const f = friendFromCard(uri)
       return Promise.resolve({ fp: f.fp, name: f.cardName ?? f.name, uri })
+    },
+    profile: {
+      get: () => Promise.resolve(undefined),
+      save: (profile) => Promise.resolve(profile),
+    },
+    directory: {
+      fetch: () => Promise.resolve(null),
+      publish: () => Promise.resolve({ ok: false, published: false }),
     },
     friends: {
       list: () => Promise.resolve([...friends.values()]),
@@ -356,6 +365,7 @@ export function createFakeNetworkClient(options: FakeOptions = {}): NetworkClien
         emit({ kind: 'group_update', gid })
         return Promise.resolve()
       },
+      lookup: () => Promise.resolve(null),
       apply: (uri, note) => {
         void note
         const me = requireIdentity()

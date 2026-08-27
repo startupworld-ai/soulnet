@@ -273,12 +273,12 @@ func (d *Directory) Get(fp string) *DirEntry {
 func (d *Directory) handleFetch(w http.ResponseWriter, r *http.Request) {
 	fp := strings.TrimSpace(r.URL.Query().Get("fp"))
 	if fp == "" {
-		http.Error(w, "缺 fp 参数", 400)
+		http.Error(w, "missing fp parameter", 400)
 		return
 	}
 	e := d.Get(fp)
 	if e == nil {
-		http.Error(w, "未找到该指纹的公开名片", 404)
+		http.Error(w, "no public card for this fingerprint", 404)
 		return
 	}
 	writeDirJSON(w, e)

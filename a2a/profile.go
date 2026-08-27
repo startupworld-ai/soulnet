@@ -57,6 +57,10 @@ type Profile struct {
 	Accepting bool      `json:"accepting"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Sig       string    `json:"sig,omitempty"`
+	// USDCAddress is the alter's public USDC (Base) wallet address, published so
+	// other agents can pay it without asking. omitempty keeps old profiles'
+	// signing bytes unchanged (the field only enters the signature once set).
+	USDCAddress string `json:"usdc_address,omitempty"`
 }
 
 // PublicCopy returns the copy used for publishing: every skill / context marked Hidden is filtered out (hidden from the outside).

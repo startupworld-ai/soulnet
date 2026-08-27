@@ -41,6 +41,36 @@ const (
 	MaxGroupAdmins   = 16
 )
 
+// JoinPayment is the paid-join proof an applicant attaches to a group_join
+// (Message.Payment): the on-chain USDC transfer they made to the group's
+// JoinAddr. Verified by the owner's node against the public chain before
+// approving (amount ≥ join_price, recipient == join_addr). Replay protection:
+// the owner consumes each tx_hash once (one tx admits one member) and — when
+// Payer/Proof are present — requires the on-chain sender to be an address the
+// applicant proved control of (a wallet-secret receipt, see join.receipt).
+type JoinPayment struct {
+	TxHash string `json:"tx_hash"` // 0x transaction hash (Base)
+	Amount string `json:"amount"`  // decimal USDC, e.g. "1.00"
+	To     string `json:"to"`      // 0x recipient address (must equal join_addr)
+	// Payer is the 0x address the applicant paid from (identity binding: the
+	// owner rejects proofs whose on-chain sender differs).
+	Payer string `json:"payer,omitempty"`
+	// Proof is the wallet-secret receipt (minted by the applicant's local
+	// paygate) proving the applicant controls Payer. Optional — without it the
+	// owner still enforces sender==Payer, but cannot cryptographically tie the
+	// wallet to the applicant.
+	Proof *JoinPaymentProof `json:"proof,omitempty"`
+	Note  string            `json:"note,omitempty"` // optional display note ("paid 1 USDC to join")
+}
+
+// JoinPaymentProof is the wire form of the wallet-secret receipt minted by
+// the applicant's paygate (POST /v2/pay/join.receipt).
+type JoinPaymentProof struct {
+	Message string `json:"message"` // canonical JSON {"fp","tx_hash","payer"}
+	Pubkey  string `json:"pubkey"`  // hex 0x04||x||y (uncompressed P-256 public key)
+	Sig     string `json:"sig"`     // hex R||S (raw ES256 signature)
+}
+
 // Speak scopes (GroupProfile.SpeakWho).
 const (
 	SpeakAll    = "all"
@@ -53,6 +83,10 @@ const (
 	JoinInvite = "invite" // members enter by owner/admin invitation only
 	JoinApply  = "apply"  // strangers may apply (group_join); owner approves
 	JoinOpen   = "open"   // strangers who apply are added mechanically
+	// JoinPaid: strangers may apply only after paying join_price USDC to
+	// join_addr (a public on-chain address); the application carries a Payment
+	// proof that the owner's node verifies (public RPC) before approving.
+	JoinPaid = "paid"
 )
 
 // Agent wake policies (GroupProfile.AgentWake).
@@ -75,8 +109,17 @@ type GroupProfile struct {
 	SpeakAgents bool `json:"speak_agents"`
 	// SpeakWho: which MEMBERS may post at all: all | owner | admins ("" = all).
 	SpeakWho string `json:"speak_who,omitempty"`
-	// Join: invite | apply | open ("" = invite).
+	// Join: invite | apply | open | paid ("" = invite).
 	Join string `json:"join,omitempty"`
+	// JoinPrice is the paid-join price in USDC (decimal string, e.g. "1.00");
+	// required when Join == "paid".
+	JoinPrice string `json:"join_price,omitempty"`
+	// JoinAddr is the paid-join receiving address (0x, Base); required when
+	// Join == "paid". Defaults to the owner's published wallet address.
+	JoinAddr string `json:"join_addr,omitempty"`
+	// JoinNote is the payment instruction shown to applicants (amount, address,
+	// what to write in the application). Display only.
+	JoinNote string `json:"join_note,omitempty"`
 	// AgentWake: when a member's alter wakes on group traffic: mention | always | never ("" = mention).
 	AgentWake string `json:"agent_wake,omitempty"`
 	// AgentTier: default reply tier of alters in this group: notify | draft | auto ("" = draft).
@@ -117,6 +160,57 @@ func oneOf(v string, allowed ...string) bool {
 	return false
 }
 
+// validUSDCAmount accepts a positive USDC decimal string like "1.00" / "0.5" / "10"
+// (no exponent, at most 6 fraction digits, strictly positive).
+func validUSDCAmount(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	parts := strings.SplitN(s, ".", 2)
+	if parts[0] == "" {
+		return false
+	}
+	for _, ch := range parts[0] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	if len(parts) == 2 {
+		if parts[1] == "" || len(parts[1]) > 6 {
+			return false
+		}
+		for _, ch := range parts[1] {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	// strictly positive: "0" / "0.000000" are not a price
+	nz := false
+	for _, ch := range s {
+		if ch >= '1' && ch <= '9' {
+			nz = true
+			break
+		}
+	}
+	return nz
+}
+
+// validHexAddress accepts a 0x-prefixed 40-hex-char EVM address.
+func validHexAddress(s string) bool {
+	s = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "0x"))
+	if len(s) != 40 {
+		return false
+	}
+	for _, ch := range s {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate checks the profile's shape. memberFps (when non-nil) additionally pins every
 // admin to a current member.
 func (p *GroupProfile) Validate(memberFps []string) error {
@@ -126,8 +220,19 @@ func (p *GroupProfile) Validate(memberFps []string) error {
 	if !oneOf(p.SpeakWho, SpeakAll, SpeakOwner, SpeakAdmins) {
 		return fmt.Errorf("speak_who must be all|owner|admins")
 	}
-	if !oneOf(p.Join, JoinInvite, JoinApply, JoinOpen) {
-		return fmt.Errorf("join must be invite|apply|open")
+	if !oneOf(p.Join, JoinInvite, JoinApply, JoinOpen, JoinPaid) {
+		return fmt.Errorf("join must be invite|apply|open|paid")
+	}
+	if p.Join == JoinPaid {
+		if p.JoinPrice == "" {
+			return fmt.Errorf("join=paid requires join_price (USDC decimal, e.g. \"1.00\")")
+		}
+		if !validUSDCAmount(p.JoinPrice) {
+			return fmt.Errorf("join_price must be a positive USDC decimal, e.g. \"1.00\"")
+		}
+		if !validHexAddress(p.JoinAddr) {
+			return fmt.Errorf("join=paid requires join_addr (0x Base address)")
+		}
 	}
 	if !oneOf(p.AgentWake, WakeMention, WakeAlways, WakeNever) {
 		return fmt.Errorf("agent_wake must be mention|always|never")
@@ -277,6 +382,11 @@ type GroupCard struct {
 	Members   int      `json:"members"`
 	RulesHead string   `json:"rules_head,omitempty"` // first part of the rules, for display
 	OwnerCard *Card    `json:"owner_card"`           // where applications go (pairwise group_join)
+	// Paid-join pricing, published so applicants know what to pay and where
+	// (empty unless Join == "paid").
+	JoinPrice string `json:"join_price,omitempty"` // USDC decimal, e.g. "1.00"
+	JoinAddr  string `json:"join_addr,omitempty"`  // 0x receiving address (Base)
+	JoinNote  string `json:"join_note,omitempty"`  // payment instruction (display)
 }
 
 // PublicCard derives the public card from a roster, or nil when the group is not public.
@@ -293,6 +403,12 @@ func (g *GroupRoster) PublicCard() *GroupCard {
 	if join == "" {
 		join = JoinInvite
 	}
-	return &GroupCard{GID: g.GroupID, Name: g.Name, Room: p.Room, Join: join, Tags: p.Tags,
+	card := &GroupCard{GID: g.GroupID, Name: g.Name, Room: p.Room, Join: join, Tags: p.Tags,
 		Members: len(g.Members), RulesHead: head, OwnerCard: g.Member(g.OwnerFp())}
+	if join == JoinPaid {
+		card.JoinPrice = p.JoinPrice
+		card.JoinAddr = p.JoinAddr
+		card.JoinNote = p.JoinNote
+	}
+	return card
 }

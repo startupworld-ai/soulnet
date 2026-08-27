@@ -74,16 +74,18 @@ echo "-- [2/6] go build soulnet peer (windows-x64) + pack tarballs"
 # release invariant, not an installer one (npm currently has peer 0.1.0 next
 # to plugin 0.1.1 by design -- workspace:* rewrites to the real version).
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0     go build -trimpath -ldflags "-s -w -X main.Version=$VERSION"     -o "$DSH_DIR/packages/soulnet-win32-x64/bin/soulnet.exe" ./cmd/soulnet )
+( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0     go build -trimpath -ldflags "-s -w -X main.Version=$VERSION"     -o "$DSH_DIR/packages/soulnet-paygate-win32-x64/bin/paygate.exe" ./payment/cmd/paygate )
 rm -rf "$STAGE"
 TARBALLS="$ROOT/.installer-stage/tarballs"
 rm -rf "$TARBALLS"
 mkdir -p "$TARBALLS"
-for pkg in soulnet-win32-x64 dsh sidebar; do
+for pkg in soulnet-win32-x64 soulnet-paygate-win32-x64 dsh sidebar; do
   ( cd "$DSH_DIR/packages/$pkg" && pnpm pack --pack-destination "$TARBALLS" >/dev/null )
 done
 
 PLUGIN_TGZ="$(ls "$TARBALLS"/soulnet-dsh-[0-9]*.tgz)"
 PEER_TGZ="$(ls "$TARBALLS"/soulnet-peer-windows-x64-*.tgz)"
+PAYGATE_TGZ="$(ls "$TARBALLS"/soulnet-paygate-windows-x64-*.tgz)"
 SIDEBAR_TGZ="$(ls "$TARBALLS"/soulnet-dsh-sidebar-*.tgz)"
 
 # ------------------------------------------------------- [3] portable node
@@ -180,7 +182,7 @@ EOF
 # plain Node resolution from the profile dir, so shipping the directory is
 # enough (`dsh plugin` reconciles only dependency-listed names, so it will
 # neither fetch nor drop it).
-for tgz in "$PLUGIN_TGZ" "$PEER_TGZ" "$SIDEBAR_TGZ"; do
+for tgz in "$PLUGIN_TGZ" "$PEER_TGZ" "$PAYGATE_TGZ" "$SIDEBAR_TGZ"; do
   rm -rf "$STAGE/pkg"
   mkdir -p "$STAGE/pkg"
   tar -xzf "$tgz" -C "$STAGE/pkg"
@@ -190,6 +192,8 @@ done
 rm -rf "$STAGE/pkg"
 [[ -f "$WEB/node_modules/soulnet-peer-windows-x64/bin/soulnet.exe" ]] || {
   echo "error: peer binary missing from template" >&2; exit 1; }
+[[ -f "$WEB/node_modules/soulnet-paygate-windows-x64/bin/paygate.exe" ]] || {
+  echo "error: paygate binary missing from template" >&2; exit 1; }
 # Template marker: the launcher refreshes the shipped packages when it changes.
 PLUGIN_SHA="$(sha256sum "$PLUGIN_TGZ" | cut -c1-16)"
 printf '%s %s\n' "$VERSION" "$PLUGIN_SHA" > "$WEB/.soulmirror-template-version"

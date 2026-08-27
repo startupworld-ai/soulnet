@@ -113,7 +113,13 @@ export interface GroupProfile {
   /** Which MEMBERS may post at all ("" = all). */
   readonly speakWho?: 'all' | 'owner' | 'admins'
   /** Join policy ("" = invite). */
-  readonly join?: 'invite' | 'apply' | 'open'
+  readonly join?: 'invite' | 'apply' | 'open' | 'paid'
+  /** Paid-join price in USDC decimal ("1.00"); required when join = paid. */
+  readonly joinPrice?: string
+  /** Paid-join receiving address (0x, Base); required when join = paid. */
+  readonly joinAddr?: string
+  /** Payment instruction shown to applicants (display only). */
+  readonly joinNote?: string
   /** When a member's alter wakes on group traffic ("" = mention). */
   readonly agentWake?: 'mention' | 'always' | 'never'
   /** Default reply tier of alters in this group ("" = draft). */
@@ -140,11 +146,47 @@ export interface GroupPin {
 }
 
 /** One pending application of a stranger to join the group (owner only). */
+export interface JoinPayment {
+  readonly tx_hash: string
+  readonly amount: string
+  readonly to: string
+  /** The 0x address the applicant paid from (identity binding: the owner's
+   * node rejects proofs whose on-chain sender differs from this). */
+  readonly payer?: string
+  /** Wallet-secret receipt (from the applicant's local paygate) proving the
+   * applicant controls `payer` - without it the owner cannot cryptographically
+   * tie the wallet to the applicant. */
+  readonly proof?: JoinPaymentProof
+  readonly note?: string
+}
+
+/** The wire form of a wallet-secret receipt (paygate POST /v2/pay/join.receipt). */
+export interface JoinPaymentProof {
+  readonly message: string
+  readonly pubkey: string
+  readonly sig: string
+}
+
 export interface GroupApplication {
   readonly fp: Fingerprint
   readonly name: string
   readonly note: string
   readonly ts?: number
+  /** Paid-join proof when the group's join policy is "paid". */
+  readonly payment?: JoinPayment
+}
+
+/** A group's PUBLIC card (from `group.lookup`): what a stranger sees before applying. */
+export interface GroupCardView {
+  readonly gid: string
+  readonly name: string
+  readonly join: string
+  readonly members: number
+  readonly joinPrice?: string
+  readonly joinAddr?: string
+  readonly joinNote?: string
+  /** First ~280 chars of the group rules (may carry the paid-join marker). */
+  readonly rulesHead?: string
 }
 
 /** One group I am in (sender-key fan-out group, wire spec §14). */
@@ -228,8 +270,8 @@ export type NetworkEvent =
   | { readonly kind: 'group_typing'; readonly gid: string; readonly fp: Fingerprint; readonly agent?: string; readonly on: boolean }
   /** Joined / roster changed / left one group — refetch the group list. */
   | { readonly kind: 'group_update'; readonly gid: string }
-  /** A stranger applied to join one of my groups (owner side). */
-  | { readonly kind: 'group_application'; readonly gid: string; readonly request: { readonly fp: Fingerprint; readonly name: string; readonly note: string } }
+  /** A stranger applied to join one of my groups (owner side); `request.payment` is the paid-join proof when the group's join policy is "paid". */
+  | { readonly kind: 'group_application'; readonly gid: string; readonly request: { readonly fp: Fingerprint; readonly name: string; readonly note: string; readonly payment?: JoinPayment } }
 
 /** Error raised by a backend call; `code` follows the soulnet JSON-RPC table (cmd/soulnet/README.md). */
 export class NetworkError extends Error {
@@ -237,6 +279,28 @@ export class NetworkError extends Error {
   constructor(message: string, readonly code: number, readonly data?: unknown) {
     super(message)
   }
+}
+
+/** The capability profile (a2a/profile.json) as seen by the plugin. Extra fields
+ * (skills, contexts, …) pass through untouched — the peer signs what it gets. */
+export interface CapabilityProfile {
+  v?: number
+  fingerprint?: string
+  tags?: readonly string[]
+  summary?: string
+  intro?: string
+  accepting?: boolean
+  updated_at?: string
+  sig?: string
+  /** Public USDC (Base) wallet address; lets other agents pay this alter. */
+  usdc_address?: string
+  [key: string]: unknown
+}
+
+/** A directory hit: the published card plus an optional signed profile. */
+export interface DirectoryHit {
+  readonly profile?: CapabilityProfile
+  [key: string]: unknown
 }
 
 /** soulnet application error codes (branch on these, never on message text). */
@@ -259,6 +323,8 @@ export interface NetworkClient {
   /** `undefined` until an identity was created (first run). */
   identity(): Promise<Identity | undefined>
   createIdentity(name: string): Promise<Identity>
+  /** Sign an A2A request (`method`+`path`+`ts`, relay VerifyRequest bytes) with the identity's private key. The key never leaves the backend — local services (e.g. the payment gateway) verify it with the public key from identity.json. No identity → NetworkErrorCode.noIdentity. */
+  signRequest(method: string, path: string, ts: string): Promise<string>
   /** Own card URI (`soulmirror://card?...`). */
   card(): Promise<string>
   parseCard(uri: string): Promise<{ fp: Fingerprint; name: string; uri: string }>
@@ -274,6 +340,20 @@ export interface NetworkClient {
     remove(fp: Fingerprint): Promise<void>
     /** A friend's card URI (from the card snapshot), e.g. to forward it. Not a friend → NetworkErrorCode.notFriend. */
     card(fp: Fingerprint): Promise<{ fp: Fingerprint; name: string; uri: string }>
+  }
+  /** Capability profile (published to the directory): `usdc_address` is how other agents find this alter's wallet. */
+  readonly profile: {
+    /** The local capability profile, or undefined when none was saved yet. */
+    get(): Promise<CapabilityProfile | undefined>
+    /** Save + sign the profile locally (does NOT publish). */
+    save(profile: CapabilityProfile): Promise<CapabilityProfile>
+  }
+  /** The opt-in capability directory (relay side): how agents find each other's wallet addresses. */
+  readonly directory: {
+    /** Fetch one entry (card + signed profile) by fingerprint. null when absent. */
+    fetch(fp: Fingerprint): Promise<DirectoryHit | null>
+    /** Publish the saved profile (signed) to the directory. */
+    publish(profile?: CapabilityProfile): Promise<{ ok: boolean; published: boolean }>
   }
   readonly groups: {
     list(): Promise<readonly Group[]>
@@ -298,8 +378,10 @@ export interface NetworkClient {
     pin(gid: string, body: string): Promise<void>
     /** Remove one pin by id (owner/admin). */
     unpin(gid: string, id: string): Promise<void>
-    /** Apply to join a group from its public URI (`soulmirror://group?gid=…&relay=…`). */
-    apply(uri: string, note?: string): Promise<{ gid: string }>
+    /** Fetch a group's PUBLIC card (join policy, paid-join price/address) from its URI. */
+    lookup(uri: string): Promise<GroupCardView | null>
+    /** Apply to join a group from its public URI; `payment` is the paid-join proof for join policy "paid". */
+    apply(uri: string, note?: string, payment?: JoinPayment): Promise<{ gid: string }>
     /** Pending join applications (owner only). */
     applications(gid: string): Promise<readonly GroupApplication[]>
     /** Approve one application: the applicant joins the roster (owner). */

@@ -1,0 +1,34 @@
+{
+  "name": "soulnet-paygate-linux-x64",
+  "version": "0.1.9",
+  "description": "The soulnet local payment gateway (paygate) binary for Linux x64; installed automatically as an optional dependency of soulnet-dsh",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/startupworld-ai/soulnet",
+    "directory": "dsh/packages/soulnet-paygate-linux-x64"
+  },
+  "homepage": "https://github.com/startupworld-ai/soulnet#readme",
+  "keywords": [
+    "soulmirror",
+    "soulnet",
+    "paygate",
+    "usdc",
+    "cdp",
+    "dsh-plugin",
+    "deepseek-harness"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  }
+}

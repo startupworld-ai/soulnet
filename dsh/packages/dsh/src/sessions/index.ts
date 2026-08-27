@@ -91,6 +91,7 @@ import type { A2AMessageId, A2ANoteKind, A2ASourceMeta, Fingerprint } from '../e
 import { RELAY_FORM, SOULMIRROR_PLUGIN } from '../events.ts'
 import { FriendSettingsStore, ProtocolFile } from '../friend-settings.ts'
 import { groupProfileOf, sendGroupMessage, type GroupProfileView } from '../group-contract.ts'
+import { rulesWithoutPaidJoin } from '../group-contract.ts'
 import { GroupSettingsStore, type GroupSettings, type GroupSettingsPatch } from '../group-settings.ts'
 import { sendAndArchive } from '../network/send.ts'
 import type { ConversationEntry, Friend, InboundMessage, NetworkClient } from '../network/types.ts'
@@ -628,7 +629,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       sp.variable(PERSONA_VARIABLES.triggerGroupRules, () => {
         const t = trigger()
         if (t.kind !== 'group' || t.gid === undefined) return PERSONA_NONE
-        return nonEmpty(groupsByGid.get(t.gid)?.profile.rules ?? '')
+        return nonEmpty(rulesWithoutPaidJoin(groupsByGid.get(t.gid)?.profile.rules))
       })
       sp.variable(PERSONA_VARIABLES.protocol, () => nonEmpty(protocolFile.read()))
       sp.variable(PERSONA_VARIABLES.drafts, () => draftsLine())
@@ -680,7 +681,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       sp.variable(PERSONA_VARIABLES.triggerGroupRules, () => {
         const t = trigger()
         if (t.kind !== 'group' || t.gid === undefined) return PERSONA_NONE
-        return nonEmpty(groupsByGid.get(t.gid)?.profile.rules ?? '')
+        return nonEmpty(rulesWithoutPaidJoin(groupsByGid.get(t.gid)?.profile.rules))
       })
       sp.variable(PERSONA_VARIABLES.memory, () => {
         try {

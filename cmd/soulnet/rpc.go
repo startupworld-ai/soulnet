@@ -260,6 +260,7 @@ func (s *Server) methods() map[string]handler {
 		"initialize":              s.initialize,
 		"identity.get":            s.identityGet,
 		"identity.create":         s.identityCreate,
+		"identity.signRequest":    s.identitySignRequest,
 		"card.get":                s.cardGet,
 		"card.parse":              s.cardParse,
 		"friends.list":            s.friendsList,
@@ -286,6 +287,7 @@ func (s *Server) methods() map[string]handler {
 		"group.pin":               s.groupPin,
 		"group.unpin":             s.groupUnpin,
 		"group.apply":             s.groupApply,
+		"group.lookup":            s.groupLookup,
 		"group.applications":      s.groupApplications,
 		"group.approve":           s.groupApprove,
 		"group.applicationReject": s.groupApplicationReject,
@@ -423,6 +425,33 @@ func (s *Server) methodNames() []string {
 
 func (s *Server) identityGet(context.Context, json.RawMessage) (any, error) {
 	return map[string]any{"identity": viewIdentity(s.n.Identity())}, nil
+}
+
+// identitySignRequest signs an A2A request (method+path+timestamp) with the
+// local identity's Ed25519 private key. The private key never leaves the peer:
+// local services (e.g. the payment gateway) verify the signature with the
+// public key and fingerprint they read from identity.json.
+func (s *Server) identitySignRequest(_ context.Context, params json.RawMessage) (any, error) {
+	id := s.n.Identity()
+	if id == nil {
+		return nil, &rpcError{Code: codeNoIdentity, Message: "no identity yet"}
+	}
+	var p struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		TS     string `json:"ts"`
+	}
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(p.Method) == "" || strings.TrimSpace(p.Path) == "" || strings.TrimSpace(p.TS) == "" {
+		return nil, invalid("method, path and ts are required (RFC3339 timestamp)")
+	}
+	priv, err := id.EdPrivate()
+	if err != nil {
+		return nil, &rpcError{Code: codeInternal, Message: "read identity key: " + err.Error()}
+	}
+	return map[string]any{"signature": a2a.SignReq(priv, p.Method, p.Path, p.TS)}, nil
 }
 
 func (s *Server) identityCreate(_ context.Context, params json.RawMessage) (any, error) {

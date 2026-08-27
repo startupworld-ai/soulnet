@@ -43,6 +43,9 @@ import {
   type NetworkEvent,
   type PendingRequest,
   type SendReceipt,
+  type CapabilityProfile,
+  type DirectoryHit,
+  type GroupCardView,
 } from './types.ts'
 
 export const DEFAULT_RELAY = 'https://relay.startupworld.cn'
@@ -255,7 +258,7 @@ interface WireIdentity { name?: string; fingerprint?: string; created_at?: strin
 interface WireCard { name?: string }
 interface WireMessage {
   id?: string; from?: string; to?: string; ts?: string; type?: string; body?: string; auto?: boolean; by?: string
-  agent?: string; artifact_name?: string; card?: WireCard
+  agent?: string; artifact_name?: string; card?: WireCard; payment?: WireJoinPayment
 }
 interface WireFriend {
   fingerprint?: string; note?: string; protocol?: string; card?: WireCard; added_at?: string
@@ -270,7 +273,9 @@ interface WireGroup {
   profile?: unknown
 }
 interface WireGroupPin { id?: string; from?: string; ts?: unknown; body?: string }
-interface WireGroupApplication { fp?: string; name?: string; note?: string; ts?: unknown }
+interface WireGroupApplication { fp?: string; name?: string; note?: string; ts?: unknown; payment?: WireJoinPayment }
+interface WireJoinPayment { tx_hash?: string; amount?: string; to?: string; payer?: string; proof?: { message?: string; pubkey?: string; sig?: string }; note?: string }
+interface WireGroupCard { gid?: string; name?: string; join?: string; members?: number; join_price?: string; join_addr?: string; join_note?: string; rules_head?: string }
 interface WireGroupInfo extends WireGroup {
   member_list?: { fp?: string; name?: string; agents?: unknown[] }[]
   pins?: WireGroupPin[]
@@ -308,7 +313,10 @@ export function profileFromWire(value: unknown): GroupProfile | undefined {
     speakHumans: p['speak_humans'] === true,
     speakAgents: p['speak_agents'] === true,
     ...(speakWho === 'all' || speakWho === 'owner' || speakWho === 'admins' ? { speakWho } : {}),
-    ...(join === 'invite' || join === 'apply' || join === 'open' ? { join } : {}),
+    ...(join === 'invite' || join === 'apply' || join === 'open' || join === 'paid' ? { join } : {}),
+    ...(join === 'paid' && s(p['join_price']) !== undefined ? { joinPrice: s(p['join_price'])! } : {}),
+    ...(join === 'paid' && s(p['join_addr']) !== undefined ? { joinAddr: s(p['join_addr'])! } : {}),
+    ...(join === 'paid' && s(p['join_note']) !== undefined ? { joinNote: s(p['join_note'])! } : {}),
     ...(wake === 'mention' || wake === 'always' || wake === 'never' ? { agentWake: wake } : {}),
     ...(tier === 'notify' || tier === 'draft' || tier === 'auto' ? { agentTier: tier } : {}),
     ...(n(p['auto_per_hour']) === undefined ? {} : { autoPerHour: n(p['auto_per_hour'])! }),
@@ -329,6 +337,9 @@ export function profileToWire(p: GroupProfile): Record<string, unknown> {
     speak_agents: p.speakAgents,
     ...(p.speakWho === undefined ? {} : { speak_who: p.speakWho }),
     ...(p.join === undefined ? {} : { join: p.join }),
+    ...(p.joinPrice === undefined ? {} : { join_price: p.joinPrice }),
+    ...(p.joinAddr === undefined ? {} : { join_addr: p.joinAddr }),
+    ...(p.joinNote === undefined ? {} : { join_note: p.joinNote }),
     ...(p.agentWake === undefined ? {} : { agent_wake: p.agentWake }),
     ...(p.agentTier === undefined ? {} : { agent_tier: p.agentTier }),
     ...(p.autoPerHour === undefined ? {} : { auto_per_hour: p.autoPerHour }),
@@ -412,11 +423,20 @@ function pinFromWire(w: WireGroupPin): GroupPin {
 
 function applicationFromWire(w: WireGroupApplication): GroupApplication {
   const applicant = str(w.fp)
+  const payment = w.payment
   return {
     fp: fp(applicant),
     name: str(w.name) !== '' ? str(w.name) : shortFp(applicant),
     note: str(w.note),
     ...(w.ts === undefined ? {} : { ts: toMs(w.ts) }),
+    ...(payment === undefined || payment.tx_hash === undefined ? {} : {
+      payment: {
+        tx_hash: payment.tx_hash,
+        amount: str(payment.amount),
+        to: str(payment.to),
+        ...(payment.note === undefined ? {} : { note: payment.note }),
+      },
+    }),
   }
 }
 
@@ -598,13 +618,29 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
         return
       case 'group.application': {
         // A stranger applied to join a group I own: {gid, peer, message} where
-        // message.body is the application note and message.card the applicant's card.
+        // message.body is the application note, message.card the applicant card
+        // and message.payment the paid-join proof (join policy "paid").
         const m = p.message ?? {}
         const cardName = str(m.card?.name)
+        const payment = m.payment
         emit({
           kind: 'group_application',
           gid: str(p.gid),
-          request: { fp: fp(peer), name: cardName !== '' ? cardName : shortFp(peer), note: str(m.body) },
+          request: {
+            fp: fp(peer),
+            name: cardName !== '' ? cardName : shortFp(peer),
+            note: str(m.body),
+            ...(payment === undefined || payment.tx_hash === undefined ? {} : {
+              payment: {
+                tx_hash: payment.tx_hash,
+                amount: str(payment.amount),
+                to: str(payment.to),
+                ...(payment.payer === undefined ? {} : { payer: payment.payer }),
+                ...(payment.proof !== undefined && payment.proof.message !== undefined && payment.proof.pubkey !== undefined && payment.proof.sig !== undefined ? { proof: { message: payment.proof.message, pubkey: payment.proof.pubkey, sig: payment.proof.sig } } : {}),
+                ...(payment.note === undefined ? {} : { note: payment.note }),
+              },
+            }),
+          },
         })
         return
       }
@@ -791,6 +827,12 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
     start,
     status: () => status,
     identity,
+    signRequest: async (method, path, ts) => {
+      const r = await call<{ signature?: string }>('identity.signRequest', { method, path, ts })
+      const signature = str(r.signature)
+      if (signature === '') throw new NetworkError('identity.signRequest returned no signature', -32603)
+      return signature
+    },
     createIdentity: async (name) => {
       const r = await call<{ identity?: WireIdentity }>('identity.create', { name })
       cachedCardUri = undefined
@@ -801,6 +843,26 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
     parseCard: async (uri) => {
       const r = await call<{ uri?: string; fingerprint?: string; card?: WireCard }>('card.parse', { uri })
       return { fp: fp(str(r.fingerprint)), name: str(r.card?.name), uri: str(r.uri, uri) }
+    },
+    profile: {
+      get: async () => {
+        const r = await call<{ profile?: CapabilityProfile | null }>('profile.get')
+        return r.profile === undefined || r.profile === null ? undefined : r.profile
+      },
+      save: async (profile) => {
+        const r = await call<{ profile?: CapabilityProfile }>('profile.save', { profile })
+        return r.profile ?? profile
+      },
+    },
+    directory: {
+      fetch: async (fp) => {
+        const r = await call<{ entry?: DirectoryHit | null }>('directory.fetch', { fp })
+        return r.entry === undefined || r.entry === null ? null : r.entry
+      },
+      publish: async (profile) => {
+        const r = await call<{ ok?: boolean; published?: boolean }>('directory.publish', { ...(profile === undefined ? {} : { profile }) })
+        return { ok: r.ok === true, published: r.published === true }
+      },
     },
     friends: {
       list: async () => {
@@ -899,8 +961,36 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
       unpin: async (gid, id) => {
         await call('group.unpin', { gid, id })
       },
-      apply: async (uri, note) => {
-        const r = await call<{ ok?: boolean; gid?: string }>('group.apply', { uri, ...(note === undefined ? {} : { note }) })
+      lookup: async (uri): Promise<GroupCardView | null> => {
+        const r = await call<{ card?: WireGroupCard | null }>('group.lookup', { uri })
+        const c = r.card
+        if (c === undefined || c === null) return null
+        return {
+          gid: str(c.gid),
+          name: str(c.name),
+          join: str(c.join),
+          members: typeof c.members === 'number' ? c.members : 0,
+          ...(c.join_price === undefined ? {} : { joinPrice: c.join_price }),
+          ...(c.join_addr === undefined ? {} : { joinAddr: c.join_addr }),
+          ...(c.join_note === undefined ? {} : { joinNote: c.join_note }),
+          ...(c.rules_head === undefined || c.rules_head === '' ? {} : { rulesHead: c.rules_head }),
+        }
+      },
+      apply: async (uri, note, payment) => {
+        const r = await call<{ ok?: boolean; gid?: string }>('group.apply', {
+          uri,
+          ...(note === undefined ? {} : { note }),
+          ...(payment === undefined ? {} : {
+            payment: {
+              tx_hash: payment.tx_hash,
+              amount: payment.amount,
+              to: payment.to,
+              ...(payment.payer === undefined ? {} : { payer: payment.payer }),
+              ...(payment.proof === undefined ? {} : { proof: payment.proof }),
+              ...(payment.note === undefined ? {} : { note: payment.note }),
+            },
+          }),
+        })
         return { gid: str(r.gid) }
       },
       applications: async (gid) =>

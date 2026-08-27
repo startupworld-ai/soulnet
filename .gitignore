@@ -13,6 +13,19 @@ dsh/**/dist/
 .installer-stage/
 .installer-cache/
 .claude/
+.idea/
+docs/
+
+# payment gateway secrets (never commit)
+payment/.env.local
+payment/secrets/
+*.wallet-secret
+
+# local Go toolchain + build cache (never commit)
+_tools/
+.pnpm-store/
+.gocache/
+.gomod/
 .dev/
 temp/
 .vscode/

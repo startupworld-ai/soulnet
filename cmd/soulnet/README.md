@@ -39,6 +39,7 @@ The `initialize` result carries the `methods` / `notifications` lists for capabi
 | `initialize` | `{name?}` | `{protocol, version, home, relay, identity\|null, running, methods[], notifications[]}` | With `name` and no identity yet → creates the identity on the way; then makes sure the receive loop is running |
 | `identity.get` | — | `{identity\|null}` | `identity = {name, fingerprint, ed_pub, x_pub, proxies[], created_at}`, **without private keys** |
 | `identity.create` | `{name}` | `{identity, running}` | Identity already exists → `-32003` |
+| `identity.signRequest` | `{method, path, ts}` | `{signature}` | Sign an A2A request (`method+path+ts`, same bytes as the relay's `VerifyRequest`) with the identity's private key. The key never leaves the peer — local services (e.g. the payment gateway) verify with the public key/fingerprint from `identity.json`. No identity → `-32001` |
 | `card.get` | — | `{uri, fingerprint, card}` | The local card (`soulmirror://card?…` link + structure) |
 | `card.parse` | `{uri}` | `{uri, fingerprint, card}` | Parse and verify someone else's card link |
 | `friends.list` | — | `{friends[], pending[]}` | `friends[i]` = friend + `{count, unread, last, typing}`; `pending` = pending requests |
@@ -72,8 +73,8 @@ The `initialize` result carries the `methods` / `notifications` lists for capabi
 | `group.setProfile` | `{gid, profile}` | `{ok}` | Owner only: republish the roster (version+1, re-signed) with the new governance profile; members converge on the fanned `group_update` |
 | `group.pin` | `{gid, body}` | `{pin}` | Owner/admins: pin an announcement on the group home (`pin = {id, from, ts, body}`). Fans a `group_pin`; pins live beside the chat stream, never in it; every change raises `group.updated` |
 | `group.unpin` | `{gid, id}` | `{ok}` | Owner/admins: remove one pin by its id |
-| `group.apply` | `{uri, note?}` | `{ok, gid}` | Apply to join via a `soulmirror://group?...` handle: fetch the group's public card from its relay, send the owner a pairwise `group_join`. The owner's policy decides: `open` → added mechanically, `apply` → pended for approval, `invite` → dropped |
-| `group.applications` | `{gid}` | `{applications[]}` | Pending join applications, `{fp, name, note?, ts}`. They live on the owner's node only (empty elsewhere) |
+| `group.apply` | `{uri, note?, payment?}` | `{ok, gid}` | Apply to join via a `soulmirror://group?...` handle: fetch the group's public card from its relay, send the owner a pairwise `group_join`. The owner's policy decides: `open` → added mechanically, `apply`/`paid` → pended for approval (with the optional `payment` proof `{tx_hash, amount, to, note?}` carried through), `invite` → dropped |
+| `group.applications` | `{gid}` | `{applications[]}` | Pending join applications, `{fp, name, note?, ts, payment?}`. They live on the owner's node only (empty elsewhere) |
 | `group.approve` | `{gid, fp}` | `{ok}` | Owner only: approve one application — roster republish + invite + keys, application removed. No such application → `-32004` |
 | `group.applicationReject` | `{gid, fp}` | `{ok}` | Owner only: discard one application (no notice is sent) |
 | `group.invite` | `{gid, fp}` | `{ok}` | Add a **friend** of mine to the group. Owner: republish directly. Admin: forward a `group_admin` invite to the owner and pass the friend the invite once the roster includes them. Anyone else → `-32602` |
