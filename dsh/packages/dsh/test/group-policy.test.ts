@@ -147,6 +147,10 @@ describe('groupSendGate (tier resolution + caps)', () => {
 
   it('group-triggered turns resolve the profile agentTier', () => {
     expect(groupSendGate({ ...base, tier: 'notify' })).toEqual({ kind: 'refuse', reason: 'notify-tier' })
+    // The pure gate keeps 'draft' drafting — but the tool resolves the tier
+    // through effectiveAgentTier first, so only a seat agent with its approval
+    // switch on ever passes 'draft' in here; the alter's group replies arrive
+    // as 'auto' and go out directly (see tools-gate.test.ts).
     expect(groupSendGate({ ...base, tier: 'draft' })).toEqual({ kind: 'draft', reason: 'draft-tier' })
     expect(groupSendGate({ ...base, tier: 'auto' })).toEqual({ kind: 'allow', auto: true, reason: 'auto-tier' })
   })

@@ -30,6 +30,7 @@ import { GroupSettingsStore } from '../group-settings.ts'
 import { sendAndArchive } from '../network/send.ts'
 import { NetworkError, type ConversationEntry, type GroupProfile, type NetworkClient, type NetworkEvent } from '../network/types.ts'
 import { isReplyTier } from '../policy.ts'
+import { checkUpgrade, isValidVersion, runUpgrade, UPGRADE_REGISTRIES, upgradeRunning } from './upgrade.ts'
 import type { AlterSessions, SessionsEvent } from '../sessions/index.ts'
 import type { SoulmirrorSettings } from '../settings.ts'
 
@@ -125,7 +126,7 @@ const fpList = (value: unknown): string[] => {
 }
 
 /** GET routes whose query string stands in for the JSON body (`?fp=…&since=…&limit=…`, `?fps=a,b`). */
-const QUERY_ROUTES = new Set(['state', 'conversation.get', 'presence', 'session.latest', 'session.history', 'protocol.get', 'drafts.list', 'group.get', 'group.conversation', 'group.applications', 'group.settings', 'agents.list', 'agent.history'])
+const QUERY_ROUTES = new Set(['state', 'conversation.get', 'presence', 'session.latest', 'session.history', 'protocol.get', 'drafts.list', 'group.get', 'group.conversation', 'group.applications', 'group.settings', 'agents.list', 'agent.history', 'upgrade.check'])
 
 /** The `profile` body field as a camelCase {@link GroupProfile}, when it is a plausible object. */
 function profileOf(value: unknown): GroupProfile | undefined {
@@ -678,6 +679,49 @@ export function createApiHandler(options: ApiOptions): ApiHandler {
           return { status: 200, body: { ok: true, settings } }
         }
         return { status: 200, body: { settings: sessions !== undefined ? sessions.groupVoices(gid) : groupSettings.get(gid) } }
+      }
+      case 'upgrade.check': {
+        // Latest published soulnet-dsh vs. the running version (registry order
+        // npmjs → npmmirror, 5 s each; see ./upgrade.ts).
+        return { status: 200, body: await checkUpgrade() }
+      }
+      case 'upgrade.run': {
+        // One-click self-upgrade: pnpm add soulnet-dsh@<version> in the dsh
+        // profile directory. Only THIS package, only a strict-semver version —
+        // nothing else ever reaches the pnpm command line. On success the peer
+        // is asked to relaunch the host (host.relaunch); when it can, the host
+        // exits shortly after this response and the browser waits for the
+        // restarted server. An old peer without the method = restarting:false,
+        // the UI shows the manual-restart hint instead.
+        const version = text(body['version'])
+        if (version === undefined || !isValidVersion(version)) return bad('version must be strict semver (X.Y.Z)')
+        const registry = text(body['registry'])
+        if (registry !== undefined && !(UPGRADE_REGISTRIES as readonly string[]).includes(registry)) return bad('registry not in the allowed list')
+        if (upgradeRunning()) return { status: 409, body: { error: { code: -32000, message: 'an upgrade is already running' } } }
+        options.log('info', `upgrade.run: installing soulnet-dsh@${version}${registry === undefined ? '' : ` via ${registry}`}`)
+        const result = await runUpgrade(version, registry === undefined ? {} : { registry })
+        if (!result.ok) {
+          options.log('error', `upgrade.run failed (exit ${result.exitCode}); output tail:
+${result.output.slice(-1500)}`)
+          return { status: 200, body: { ...result, restarting: false } }
+        }
+        options.log('info', `upgrade.run: soulnet-dsh@${version} installed into ${result.profileDir}`)
+        let restarting = false
+        if (client.relaunch !== undefined) {
+          try {
+            await client.relaunch({ pid: process.pid, exec: process.execPath, argv: process.argv.slice(1), cwd: process.cwd() })
+            restarting = true
+            options.log('info', 'upgrade.run: relaunch helper armed — this host exits in 500 ms and comes back on the new version')
+          } catch (error: unknown) {
+            options.log('warn', `upgrade.run: peer relaunch unavailable (${error instanceof Error ? error.message : String(error)}); ask the user to restart dsh`)
+          }
+        }
+        if (restarting) {
+          // Let this HTTP response reach the browser first, then exit; the
+          // detached helper waits for us (and the old peer) and starts dsh again.
+          setTimeout(() => { process.exit(0) }, 500)
+        }
+        return { status: 200, body: { ...result, restarting } }
       }
       case 'protocol.get':
         return { status: 200, body: { text: protocol.read(), path: protocol.path, exists: protocol.exists() } }

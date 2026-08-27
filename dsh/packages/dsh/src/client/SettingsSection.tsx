@@ -16,6 +16,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import { api, networkStore, type ApiPending, type ReplyTier } from './api.ts'
 import type { NS } from './locales.ts'
 import { pageStore } from './page-store.ts'
+import { upgradeStore } from './upgrade-store.ts'
 
 type SettingsSectionProps = PropsRuntime<'settings.section'>
 
@@ -114,6 +115,56 @@ function SettingField({ label, field, scope, values, user, writable, type = 'tex
         )
         : <input style={input} type={type === 'number' ? 'number' : 'text'} min={min} value={draft} disabled={!writable} onChange={e => { setDraft(e.target.value) }} onBlur={commit} onKeyDown={(e) => { if (e.key === 'Enter') commit() }} data-soulmirror-setting={field} />}
     </label>
+  )
+}
+
+/**
+ * "Version & updates": the plugin self-upgrade (host routes `upgrade.check` /
+ * `upgrade.run`, client state in upgrade-store.ts). One click installs the
+ * new version and, when the peer supports `host.relaunch`, restarts dsh and
+ * reloads this page by itself; otherwise it says what to restart manually.
+ */
+function UpgradeCard({ t }: { t: SoulmirrorSettingsProps['t'] }) {
+  const up = useSyncExternalStore(upgradeStore.subscribe, upgradeStore.getSnapshot)
+  const busy = up.phase !== 'idle' && up.phase !== 'done-manual' && up.phase !== 'failed'
+  return (
+    <div style={card} data-soulmirror-upgrade>
+      <div style={rowStyle}>
+        <h4 style={h4}>{t('settings.upgrade')}</h4>
+        {up.hasUpdate
+          ? <span style={{ background: 'rgb(220,80,60)', color: '#fff', borderRadius: 999, padding: '1px 8px', fontSize: '0.72em' }} data-soulmirror-upgrade-badge>{t('settings.upgrade.badge')}</span>
+          : null}
+      </div>
+      <div style={rowStyle}>
+        <span style={small}>{t('settings.upgrade.current')}: <strong>{up.current !== undefined ? `v${up.current}` : '—'}</strong></span>
+        <button type="button" disabled={busy} onClick={() => { void upgradeStore.check() }}>
+          {up.phase === 'checking' ? t('settings.upgrade.checking') : t('settings.upgrade.check')}
+        </button>
+        {up.hasUpdate && up.latest !== undefined
+          ? (
+            <button type="button" disabled={busy} onClick={() => { void upgradeStore.run() }} data-soulmirror-upgrade-run>
+              {t('settings.upgrade.do', { version: up.latest })}
+            </button>
+          )
+          : null}
+      </div>
+      {up.phase === 'idle' && up.hasUpdate && up.latest !== undefined && up.current !== undefined
+        ? <p style={small}>{t('settings.upgrade.available', { latest: up.latest, current: up.current })}</p>
+        : null}
+      {up.phase === 'idle' && !up.hasUpdate && up.checked && up.error === undefined && up.current !== undefined
+        ? <p style={small}>{t('settings.upgrade.uptodate', { version: up.current })}</p>
+        : null}
+      {up.phase === 'installing' && up.latest !== undefined ? <p style={small}>{t('settings.upgrade.installing', { version: up.latest })}</p> : null}
+      {up.phase === 'restarting' || up.phase === 'reloading' ? <p style={small} role="status">{t('settings.upgrade.restarting')}</p> : null}
+      {up.phase === 'done-manual' ? <p style={{ ...small, opacity: 0.95 }} role="status">{t('settings.upgrade.manual', { version: up.current ?? '' })}</p> : null}
+      {(up.phase === 'failed' || up.error !== undefined) && up.error !== undefined
+        ? <p style={{ ...small, color: 'rgb(220,80,60)' }} role="alert">{t('settings.upgrade.failed', { message: up.error })}</p>
+        : null}
+      {up.phase === 'failed' && up.output !== undefined && up.output !== ''
+        ? <pre style={{ ...mono, whiteSpace: 'pre-wrap', maxHeight: 160, overflow: 'auto', margin: 0, opacity: 0.8, userSelect: 'text' }}>{up.output}</pre>
+        : null}
+      <p style={small}>{t('settings.upgrade.hint')}</p>
+    </div>
   )
 }
 
@@ -225,6 +276,8 @@ export function SoulmirrorSettingsSection({ openSession, scope, t }: SoulmirrorS
         <SettingField label={t('settings.config.home')} field="home" scope={scope} values={settings.value} user={userLayer} writable={writable} />
         <p style={small}>{t('settings.config.hint')}</p>
       </div>
+
+      <UpgradeCard t={t} />
 
       <div style={card} data-soulmirror-settings-alter>
         <h4 style={h4}>{t('settings.alter')}</h4>

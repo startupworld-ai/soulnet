@@ -66,7 +66,6 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
   const myFp = net.state?.identity?.fp
   const myName = net.state?.identity?.name ?? 'me'
   const [info, setInfo] = useState<ApiGroupInfo | undefined>(() => infoCache.get(gid))
-  const [homeOpen, setHomeOpen] = useState(false)
   const [busy, setBusy] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const [pinText, setPinText] = useState('')
@@ -96,7 +95,6 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
   // Switching groups (or a roster bump): reset, show the cached roster at once and
   // refresh it in the background (no "loading" flash on revisits).
   useEffect(() => {
-    setHomeOpen(false)
     setError(undefined)
     setInfo(infoCache.get(gid))
     setPinText('')
@@ -112,12 +110,15 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
     return () => { cancelled = true }
   }, [gid, group.version])
 
-  // Opening the home: clear the application badge and refresh the authoritative list.
+  // Entering any management tab (home / bulletin / members / manage — everything
+  // but the room): clear the application badge and refresh the authoritative
+  // list. Used to hang off `homeOpen`, which the tab strip replaced.
+  const onManagementTab = page.paneTab !== 'chat'
   useEffect(() => {
-    if (!homeOpen) return
+    if (!onManagementTab) return
     networkStore.clearGroupApps(gid)
     void refetchInfo().catch(() => {})
-  }, [homeOpen, gid, refetchInfo])
+  }, [onManagementTab, gid, refetchInfo])
 
   // Open + visible = read.
   const unread = group.unread
@@ -501,7 +502,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
                 {confirming === 'leave' ? t('group.confirm') : t('group.leave')}
               </button>
             )}
-          <button type="button" className="sm-ghostbtn" onClick={() => { setHomeOpen(false) }}>{t('inbox.close')}</button>
+          <button type="button" className="sm-ghostbtn" onClick={() => { pageStore.setPaneTab('chat') }}>{t('inbox.close')}</button>
         </div>
         {error !== undefined ? <span style={{ fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' }}>{t('settings.error', { message: error })}</span> : null}
       </div>
@@ -539,7 +540,7 @@ export function GroupPane({ t, group, visible, onGoAlter, renderRoom }: GroupPan
             {confirming === 'leave' ? t('group.confirm') : t('group.leave')}
           </button>
         )}
-      <button type="button" className="sm-ghostbtn" onClick={() => { pageStore.setPaneTab('home') }}>{t('inbox.close')}</button>
+      <button type="button" className="sm-ghostbtn" onClick={() => { pageStore.setPaneTab('chat') }}>{t('inbox.close')}</button>
     </div>
   )
   const applicationsCard = role === 'owner' && applications.length > 0

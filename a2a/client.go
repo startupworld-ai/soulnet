@@ -69,6 +69,20 @@ func (c *ProxyClient) shortHTTP() *http.Client {
 	return c.HTTP
 }
 
+// RelayError is a non-2xx relay reply. Callers must branch on StatusCode, never
+// on the message text: the public relay implementation localizes its error
+// strings (the production relay answers in Chinese), and a substring match on
+// English text silently never fires - the kicked-member "forget the group on
+// 403" path was dead in production exactly because of that.
+type RelayError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *RelayError) Error() string {
+	return fmt.Sprintf("relay %d: %s", e.StatusCode, e.Message)
+}
+
 func apiErr(resp *http.Response) error {
 	var e struct {
 		Error string `json:"error"`
@@ -78,7 +92,7 @@ func apiErr(resp *http.Response) error {
 	if e.Error == "" {
 		e.Error = strings.TrimSpace(string(raw))
 	}
-	return fmt.Errorf("邮局 %d: %s", resp.StatusCode, e.Error)
+	return &RelayError{StatusCode: resp.StatusCode, Message: e.Error}
 }
 
 // Deliver posts an encrypted, signed outer envelope to the relay (no auth header needed).

@@ -34,12 +34,12 @@ export interface InboxState {
 export interface MailNotice {
   readonly id: string
   readonly fp: string
+  /** Set when the mail is a group message (fp is then the SENDER, not the thread). */
+  readonly gid?: string
   readonly name: string
   readonly body: string
   readonly ts: number
   readonly sessionId: string | undefined
-  /** Present for group mail: the group the message landed in (for open/muted suppression). */
-  readonly gid?: string
 }
 
 export const EMPTY_INBOX: InboxState = { friends: [], groups: [], pending: [], drafts: [], alterSessionId: undefined, typing: {}, groupApps: {} }
@@ -183,7 +183,7 @@ export function applyFrame(state: InboxState, frame: NetworkEventFrame): { state
       // The new-mail cue reuses the friend notice shape; name = "sender · group".
       return {
         state: next,
-        notice: { id: message.id, fp: message.from, name: `${message.name} · ${group.name}`, body: message.body, ts: message.ts, sessionId: state.alterSessionId, gid },
+        notice: { id: message.id, fp: message.from, gid: frame.gid, name: `${message.name} · ${group.name}`, body: message.body, ts: message.ts, sessionId: state.alterSessionId },
       }
     }
     case 'group_outbound': {

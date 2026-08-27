@@ -129,6 +129,10 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
       if (rootEl === null) return
       const target = e.target instanceof Node ? e.target : (e.target as Element | null)
       if (target === null) return
+      // A click inside the page can unmount its own target before this
+      // document-level listener runs (the mention popup does: picking an item
+      // closes it synchronously). A detached node is NOT "outside the page".
+      if (!target.isConnected) return
       if (rootEl.contains(target)) return
       if ((target as Element | null)?.closest?.('[data-soulmirror-footer]') != null) return
       // A modal (agent sheet, group agents sheet, add-friend / join / create

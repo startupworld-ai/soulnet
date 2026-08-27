@@ -293,6 +293,7 @@ func (s *Server) methods() map[string]handler {
 		"group.voicesAnnounce":    s.groupVoicesAnnounce,
 		"group.typing":            s.groupTyping,
 		"artifact.path":           s.artifactPath,
+		"host.relaunch":           s.hostRelaunch,
 		"presence":                s.presence,
 		"directory.query":         s.directoryQuery,
 		"directory.fetch":         s.directoryFetch,

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,7 +151,7 @@ func (n *Peer) distributeSenderKey(ctx context.Context, st *a2a.GroupState) {
 		n.gkMu.Unlock()
 		return
 	}
-	epoch, chain := keys.Mine.Epoch, keys.Mine.Chain
+	epoch, index, chain := keys.Mine.Epoch, keys.Mine.Index, keys.Mine.Chain
 	targets := map[string]*a2a.Card{}
 	for _, c := range st.Roster.Members {
 		fp, err := c.Fingerprint()
@@ -166,7 +167,7 @@ func (n *Peer) distributeSenderKey(ctx context.Context, st *a2a.GroupState) {
 	var reached []string
 	for fp, c := range targets {
 		msg := &a2a.Message{ID: n.newMsgID(), From: me, To: fp, TS: time.Now(),
-			Type: a2a.TypeGroupKey, GID: gid, GKey: &a2a.GroupKeyDist{Epoch: epoch, Chain: chain}}
+			Type: a2a.TypeGroupKey, GID: gid, GKey: &a2a.GroupKeyDist{Epoch: epoch, Index: index, Chain: chain}}
 		if err := n.sendGroupPairwise(ctx, c, msg); err != nil {
 			n.logf("group %s: key distribution to %s failed: %v", a2a.ShortFp(gid), a2a.ShortFp(fp), err)
 			continue
@@ -404,6 +405,8 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 		n.logf("group %s: fan-out delivery failed: %v", a2a.ShortFp(gid), err)
 		res.Status = "error"
 		go n.refreshRoster(context.Background(), gid) // maybe the roster moved on without us
+	} else {
+		n.logf("<<< group mail gid=%s id=%s by=%s", a2a.ShortFp(gid), msg.ID, msg.By)
 	}
 	seq, err := n.Convs.AppendSeq(a2a.GroupConvKey(gid), &a2a.ConvEntry{Dir: "out", Message: *msg, Status: res.Status})
 	if err != nil {
@@ -450,7 +453,18 @@ func (n *Peer) GroupAnnounceVoices(ctx context.Context, gid string, voices []str
 	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), GID: gid, TS: time.Now(),
 		Type: a2a.TypeGroupVoices, Voices: sanitizeVoices(voices)}
 	if err := n.fanOutGroup(ctxOrBackground(ctx), st, msg); err != nil {
-		n.logf("group %s: voices announce delivery failed: %v", a2a.ShortFp(gid), err)
+		// Startup announces hit the relay in a burst and an occasional post
+		// times out; the roster metadata must still converge - one delayed
+		// retry covers it (receivers dedupe by message id).
+		n.logf("group %s: voices announce delivery failed (retrying once): %v", a2a.ShortFp(gid), err)
+		go func() {
+			time.Sleep(7 * time.Second)
+			if st2 := n.Groups.Get(gid); st2 != nil {
+				if err2 := n.fanOutGroup(context.Background(), st2, msg); err2 != nil {
+					n.logf("group %s: voices announce retry failed: %v", a2a.ShortFp(gid), err2)
+				}
+			}
+		}()
 	}
 	return nil
 }
@@ -708,6 +722,14 @@ func (n *Peer) groupNotifyUpdate(ctx context.Context, st *a2a.GroupState, note s
 	}
 }
 
+// relayForbidden: the relay refused us by STATUS (403) - the only reliable
+// signal that we are no longer a member. Message text is localized per relay
+// implementation and must never be matched.
+func relayForbidden(err error) bool {
+	var re *a2a.RelayError
+	return errors.As(err, &re) && re.StatusCode == http.StatusForbidden
+}
+
 // refreshRoster refetches the roster from the group relay and applies it: version must
 // increase and the owner must be unchanged. Removals trigger a rekey; my own removal
 // forgets the group.
@@ -719,7 +741,7 @@ func (n *Peer) refreshRoster(ctx context.Context, gid string) {
 	fetched, err := n.groupRelayClient(st.Roster.Relay).FetchGroup(ctx, gid)
 	if err != nil {
 		n.logf("group %s: roster refresh failed: %v", a2a.ShortFp(gid), err)
-		if strings.Contains(err.Error(), "not a member") {
+		if relayForbidden(err) {
 			// The relay no longer counts us as a member: we were removed.
 			_ = n.Groups.Remove(gid)
 			n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
@@ -984,7 +1006,7 @@ func (n *Peer) handleGroupKey(msg *a2a.Message) error {
 	if existing := keys.Senders[msg.From]; existing != nil && msg.GKey.Epoch <= existing.Epoch {
 		return nil // replay or duplicate of what we hold
 	}
-	keys.Senders[msg.From] = &a2a.GroupRecvState{Epoch: msg.GKey.Epoch, Index: 0, Chain: msg.GKey.Chain}
+	keys.Senders[msg.From] = &a2a.GroupRecvState{Epoch: msg.GKey.Epoch, Index: msg.GKey.Index, Chain: msg.GKey.Chain}
 	return n.Groups.PutKeys(msg.GID, keys)
 }
 

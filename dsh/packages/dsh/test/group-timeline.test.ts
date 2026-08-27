@@ -95,3 +95,33 @@ describe('buildTimeline', () => {
     expect(rows.filter(r => r.kind === 'work-head').map(r => (r as { agent: string }).agent)).toEqual(['DevBot', 'OpsBot'])
   })
 })
+
+describe('clock skew (archive order wins)', () => {
+  it('a later-arrived message with an EARLIER sender ts stays below what is on screen', () => {
+    // seq order: their "2" (fast clock) arrived, then my "3" (slow clock, ts 8s earlier).
+    const rows = buildTimeline([
+      entry({ ts: NOON, from: 'fp-alice' }),                      // "1"
+      entry({ ts: NOON + 10_000, from: 'fp-alice' }),             // "2" - sender clock runs fast
+      entry({ ts: NOON + 2_000, dir: 'out' }),                    // "3" - my slower clock
+    ], {})
+    const bodies = rows.filter(r => r.kind === 'entry').map(r => (r as { entry: { body: string } }).entry.body)
+    expect(bodies).toEqual(bodies.slice().sort((a, b) => a.localeCompare(b))) // body 1,2,3 in seq order
+    expect(rows.map(r => r.kind)).toEqual(['day', 'entry', 'entry', 'entry'])
+  })
+
+  it('a work trace still interleaves by its local time between clamped entries', () => {
+    const rows = buildTimeline([
+      entry({ ts: NOON }),
+      entry({ ts: NOON + 60_000 }),
+    ], { DevBot: { items: [{ kind: 'thinking', key: 't1', ts: NOON + 30_000, text: 'between' }] } })
+    expect(rows.map(r => r.kind)).toEqual(['day', 'entry', 'work-head', 'process', 'entry'])
+  })
+
+  it('a sender ts from yesterday cannot drag the day separator backwards', () => {
+    const rows = buildTimeline([
+      entry({ ts: NOON }),
+      entry({ ts: NOON - 24 * 60 * 60_000 }), // absurd skew: claims yesterday
+    ], {})
+    expect(rows.filter(r => r.kind === 'day')).toHaveLength(1)
+  })
+})

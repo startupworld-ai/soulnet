@@ -347,11 +347,14 @@ export function agentRoundsExceeded(entries: readonly GroupCapEntry[], rounds: n
 }
 
 /**
- * The tier one NAMED seat agent answers a group with. `draft` is the seat's
- * OWN review requirement — a working agent without the per-agent approval
- * switch lifts it to `auto` (direct, flagged automatic, capped). The group's
- * `notify` (agents observe only) and `auto` pass through untouched: what the
- * group forbids stays forbidden, and the mechanical caps still apply.
+ * The tier a group voice (the alter or one NAMED seat agent) answers a group
+ * with. `draft` is a per-seat review requirement, not the group's veto — it
+ * lifts to `auto` (direct, flagged automatic, capped) for the ALTER always
+ * (owner decision 2026-08-26: alter group replies need no review) and for a
+ * working agent without the per-agent approval switch; only an agent WITH the
+ * switch keeps `draft`. The group's `notify` (agents observe only) and `auto`
+ * pass through untouched: what the group forbids stays forbidden, and the
+ * mechanical caps still apply.
  */
 export function effectiveAgentTier(tier: GroupAgentTier, approval: boolean): GroupAgentTier {
   return !approval && tier === 'draft' ? 'auto' : tier
@@ -401,7 +404,10 @@ export interface GroupSendGateInput {
  * directly; turns woken by the target group resolve the profile's agentTier —
  * `auto` sends flagged auto when the caps pass and falls to a draft
  * otherwise, `draft` always drafts, `notify` refuses (the alter should not
- * attempt to speak). Any other trigger drafts.
+ * attempt to speak). Any other trigger drafts. NOTE the caller resolves the
+ * tier through {@link effectiveAgentTier} first, so `draft` only reaches this
+ * gate for a named seat agent with its approval switch on — the alter's group
+ * replies go out directly (as `auto`).
  */
 export function groupSendGate(input: GroupSendGateInput): GroupSendDecision {
   if (!input.speakAgents) return { kind: 'refuse', reason: 'agents-muted' }

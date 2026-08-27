@@ -20,7 +20,7 @@
  * The winner and its source are reported in `BackendStatus.binary` / `binarySource`.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, appendFileSync, chmodSync, constants, realpathSync } from 'node:fs'
+import { accessSync, appendFileSync, chmodSync, constants, mkdirSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join } from 'node:path'
@@ -448,7 +448,38 @@ function toNetworkError(error: unknown, method: string): NetworkError {
  * the first call or on `start()`; `dispose()` stops it.
  */
 export function createSoulnetNetworkClient(options: SoulnetClientOptions): NetworkClient & { start(): void } {
-  const log: SoulnetLogger = options.logger ?? (() => {})
+  const hostLog: SoulnetLogger = options.logger ?? (() => {})
+  // The peer's own voice (its stderr) must survive somewhere greppable: the
+  // dsh host logger only keeps an in-memory ring, so every line the client
+  // logs is ALSO appended to <home>/a2a/logs/soulnet-peer.log. Best effort -
+  // a failing disk write must never take the network down.
+  const peerLogPath = join(options.home, 'a2a', 'logs', 'soulnet-peer.log')
+  let peerLogReady = false
+  let peerLogWrites = 0
+  const log: SoulnetLogger = (level, message) => {
+    hostLog(level, message)
+    try {
+      if (!peerLogReady) {
+        mkdirSync(dirname(peerLogPath), { recursive: true })
+        peerLogReady = true
+      }
+      // Size-capped: an append-only log on a long-lived install grows without
+      // bound. Every 200 writes (and on the first), roll a >2MB file to .old
+      // (one generation kept).
+      if (peerLogWrites % 200 === 0) {
+        try {
+          if (statSync(peerLogPath).size > 2 * 1024 * 1024) renameSync(peerLogPath, `${peerLogPath}.old`)
+        } catch {
+          // missing file / locked rename: keep appending
+        }
+      }
+      peerLogWrites += 1
+      appendFileSync(peerLogPath, `${new Date().toISOString()} ${level.toUpperCase()} ${message}
+`)
+    } catch {
+      // best effort
+    }
+  }
   const relay = options.relay !== undefined && options.relay.trim() !== '' ? options.relay.trim() : DEFAULT_RELAY
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000
   const backoffInitial = options.backoff?.initialMs ?? 500
@@ -915,6 +946,21 @@ export function createSoulnetNetworkClient(options: SoulnetClientOptions): Netwo
     subscribe: (listener) => {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
+    },
+    relaunch: async (params: { pid: number; exec: string; argv: readonly string[]; cwd: string }) => {
+      // Self-upgrade restart: hand the peer our own command line plus ITS pid
+      // (the child we spawned), so the detached helper can make sure the old
+      // peer is dead before the new host starts — two peers on one identity
+      // steal each other's mail and fork group keys. An old peer without
+      // `host.relaunch` answers method-not-found; the caller falls back to
+      // "restart manually".
+      await call('host.relaunch', {
+        pid: params.pid,
+        exec: params.exec,
+        argv: [...params.argv],
+        cwd: params.cwd,
+        ...(child?.pid === undefined ? {} : { peer_pid: child.pid }),
+      }, 10_000)
     },
     dispose: async () => {
       if (disposed) return

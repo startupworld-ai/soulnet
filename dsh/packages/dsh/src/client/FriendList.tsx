@@ -675,6 +675,17 @@ export function FriendList({ t, selected, onSelect, onSelectContact, onAccepted,
           </div>
         )
         : null}
+      {createOpen
+        ? (
+          <GroupCreateDialog
+            t={t}
+            friends={inbox.friends}
+            busy={busy !== undefined}
+            onCreate={createGroup}
+            onClose={() => { setCreateOpen(false) }}
+          />
+        )
+        : null}
       {dialog === 'add'
         ? (
           <div className="sm-modal-backdrop" role="presentation" onClick={(e) => { if (e.target === e.currentTarget) setDialog(undefined) }}>

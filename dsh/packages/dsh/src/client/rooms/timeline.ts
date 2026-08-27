@@ -35,8 +35,19 @@ export function buildTimeline(
   entries: readonly ThreadEntry[],
   workFeeds: Readonly<Record<string, { readonly items: readonly ApiChatItem[] }>>,
 ): TimelineRow[] {
+  // Entries KEEP their archive order (arrival/seq - sortThread's contract).
+  // Their ts is the SENDER's clock, and peers' clocks skew: re-sorting by ts
+  // would let a just-sent message jump ABOVE one already on screen. Instead
+  // each entry gets a display time clamped to be monotonic (never before the
+  // previous entry), used only for interleaving work traces and for the day
+  // separators - the bubble still shows the sender's own clock.
+  let clamp = 0
+  const entrySlots = entries.map((e) => {
+    clamp = Math.max(e.ts, clamp + 1)
+    return { ts: clamp, entry: e }
+  })
   const mergedSlots: { ts: number; entry?: ThreadEntry; agent?: string; item?: ApiChatItem }[] = [
-    ...entries.map(e => ({ ts: e.ts, entry: e })),
+    ...entrySlots,
     ...Object.entries(workFeeds).flatMap(([agent, f]) => f.items.map(item => ({ ts: item.ts, agent, item }))),
   ].sort((a, b) => a.ts - b.ts)
   const timeline: TimelineRow[] = []
@@ -58,9 +69,9 @@ export function buildTimeline(
       let showHeader = false
       if (senderKey === undefined) runFrom = undefined
       else {
-        showHeader = senderKey !== runFrom || e.ts - runTs > RUN_GAP_MS
+        showHeader = senderKey !== runFrom || slot.ts - runTs > RUN_GAP_MS
         runFrom = senderKey
-        runTs = e.ts
+        runTs = slot.ts
       }
       timeline.push({ kind: 'entry', key: e.clientId ?? (e.seq > 0 ? `seq:${e.seq}` : `id:${e.id}`), entry: e, showHeader })
       continue

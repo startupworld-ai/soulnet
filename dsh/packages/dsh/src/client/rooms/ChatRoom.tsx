@@ -118,6 +118,7 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
   const [agentNames, setAgentNames] = useState<string[]>([])
   const [agentsSheetOpen, setAgentsSheetOpen] = useState(false)
   const [mention, setMention] = useState<{ start: number; query: string } | undefined>(undefined)
+  const [mentionIdx, setMentionIdx] = useState(0)
   const [busyVoices, setBusyVoices] = useState<Record<string, { label: string; at: number }>>({})
   // Live PROCESS feed of MY working agents in this group (local only; others just see the marker).
   const [workFeeds, setWorkFeeds] = useState<Record<string, { items: ApiChatItem[]; running: boolean }>>({})
@@ -299,6 +300,7 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
     const upto = value.slice(0, caret)
     const m = /(^|\s)@([^\s@]*)$/.exec(upto)
     setMention(m === null ? undefined : { start: caret - m[2]!.length - 1, query: m[2]! })
+    setMentionIdx(0)
   }
   const pickMention = (name: string): void => {
     if (mention === undefined) return
@@ -482,9 +484,9 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
               <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
                 {mention !== undefined && mentionMatches.length > 0
                   ? (
-                    <div style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: 6, zIndex: 20, minWidth: 180, maxHeight: 220, overflowY: 'auto', borderRadius: 8, border: '1px solid rgba(127,127,127,.35)', background: 'var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base))', boxShadow: '0 6px 24px rgba(0,0,0,.18)', padding: 4, display: 'grid' }} data-soulmirror-mention-pop>
-                      {mentionMatches.map(p => (
-                        <button key={`${p.name}|${p.owner ?? ''}`} type="button" className="sm-linkbtn" style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6 }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); pickMention(p.name) }}>
+                    <div style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: 6, zIndex: 20, minWidth: 180, maxHeight: 220, overflowY: 'auto', borderRadius: 8, border: '1px solid rgba(127,127,127,.35)', background: 'var(--dsw-specific-menu, var(--dsw-alias-bg-layer-2, #fff))', boxShadow: '0 6px 24px rgba(0,0,0,.18)', padding: 4, display: 'grid' }} data-soulmirror-mention-pop>
+                      {mentionMatches.map((p, i) => (
+                        <button key={`${p.name}|${p.owner ?? ''}`} type="button" className="sm-linkbtn" style={{ textAlign: 'left', padding: '6px 8px', borderRadius: 6, ...(i === Math.min(mentionIdx, mentionMatches.length - 1) ? { background: 'var(--dsw-alias-interactive-bg-hover)' } : {}) }} onMouseEnter={() => { setMentionIdx(i) }} onMouseDown={(e) => { e.preventDefault(); pickMention(p.name) }}>
                           {p.owner !== undefined ? <span aria-hidden style={{ marginRight: 4 }}>🤖</span> : null}
                           @{p.name}
                           {p.owner !== undefined ? <span className="sm-statepill" style={{ marginLeft: 6 }}>{p.owner}</span> : null}
@@ -503,12 +505,22 @@ export function ChatRoom({ gid, group, me, members, thread, actions, canSpeakHum
                   onBlur={() => { setTimeout(() => { setMention(undefined) }, 120) }}
                   onKeyDown={(e) => {
                     if (e.key === 'Escape' && mention !== undefined) {
+                      // This Escape means "close the popup" - it must not bubble
+                      // on to the page-level listener that closes SoulMirror.
+                      e.preventDefault()
+                      e.stopPropagation()
                       setMention(undefined)
+                      return
+                    }
+                    if (mention !== undefined && mentionMatches.length > 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                      e.preventDefault()
+                      const len = mentionMatches.length
+                      setMentionIdx(i => (Math.min(i, len - 1) + (e.key === 'ArrowDown' ? 1 : len - 1)) % len)
                       return
                     }
                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault()
-                      if (mention !== undefined && mentionMatches.length > 0) pickMention(mentionMatches[0]!.name)
+                      if (mention !== undefined && mentionMatches.length > 0) pickMention(mentionMatches[Math.min(mentionIdx, mentionMatches.length - 1)]!.name)
                       else send()
                     }
                   }}

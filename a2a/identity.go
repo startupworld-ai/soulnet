@@ -53,7 +53,7 @@ func NewIdentity(baseDir, name string, proxies []string) (*Identity, error) {
 		return nil, err
 	}
 	if len(proxies) == 0 {
-		return nil, fmt.Errorf("至少需要一个邮局地址")
+		return nil, fmt.Errorf("at least one relay address is required")
 	}
 	p := identityPath(baseDir)
 	if _, err := os.Stat(p); err == nil {

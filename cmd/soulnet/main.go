@@ -43,6 +43,12 @@ func main() {
 	log.SetFlags(log.LstdFlags)
 	log.SetPrefix("[soulnet] ")
 
+	// Subcommand dispatch before flag parsing: `soulnet relaunch ...` is the
+	// detached restart helper of the dsh plugin's self-upgrade (relaunch.go).
+	if len(os.Args) > 1 && os.Args[1] == "relaunch" {
+		os.Exit(relaunchMain(os.Args[2:]))
+	}
+
 	var (
 		home    = flag.String("home", defaultHome(), "data directory (default $SOULNET_HOME, then ~/.soulnet)")
 		relay   = flag.String("relay", peer.DefaultRelay, "relay URL (written into identity.json when the identity is created; an existing identity uses its own proxies)")
@@ -61,6 +67,16 @@ func main() {
 		logf("init failed: %v", err)
 		os.Exit(2)
 	}
+	// One peer per home, enforced by an OS lock: a second peer polling the
+	// relay under the same identity steals mail and forks group keys. A live
+	// holder = fail fast (the host's restart backoff retries until the old
+	// peer is gone); a stale lock (holder died) is taken over.
+	lock, err := acquirePeerLock(n.Home)
+	if err != nil {
+		logf("%v", err)
+		os.Exit(3)
+	}
+	defer lock.Release()
 	n.Logf = logf
 	if *name != "" && !n.HasIdentity() {
 		if _, err := n.EnsureIdentity(*name); err != nil {

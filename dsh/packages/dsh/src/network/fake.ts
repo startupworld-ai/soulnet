@@ -280,7 +280,7 @@ export function createFakeNetworkClient(options: FakeOptions = {}): NetworkClien
         if (who === 'admins' && role === 'member') return Promise.reject(new NetworkError('only the owner and admins speak in this group', -32602))
         const id = mid()
         const agent = options?.agent
-        const entry: ConversationEntry = { seq: g.entries.length + 1, dir: 'out', id, body, ts: Date.now(), status: 'sent', by, ...(by === 'alter' && agent !== undefined && agent !== '' ? { agent } : {}) }
+        const entry: ConversationEntry = { seq: g.entries.length + 1, dir: 'out', id, body, ts: Date.now(), status: 'sent', by, ...(options?.auto === true ? { auto: true } : {}), ...(by === 'alter' && agent !== undefined && agent !== '' ? { agent } : {}) }
         g.entries.push(entry)
         // A member echoes 600 ms later (their alter when agents speak here).
         const other = g.memberList.find(m => m.fp !== identity?.fp)

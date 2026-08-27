@@ -178,6 +178,9 @@ func (n *Peer) sendMessage(ctx context.Context, toCard *a2a.Card, msg *a2a.Messa
 		}
 		return err
 	}
+	if fp, ferr := toCard.Fingerprint(); ferr == nil {
+		n.logf("<<< mail to=%s type=%s id=%s", a2a.ShortFp(fp), msg.Type, msg.ID)
+	}
 	return nil
 }
 

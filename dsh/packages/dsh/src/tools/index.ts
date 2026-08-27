@@ -256,7 +256,7 @@ export function apply(ctx: Context): void {
 
   const sendGroup = defineTool({
     name: 'soulmirror_send_group_message',
-    description: 'Post a text message into one of the user\'s SoulMirror groups (by gid) as the user\'s alter. On the user\'s instruction the post goes out directly. When you are answering a group message, the group profile\'s agent tier decides: "auto" posts directly (capped by the group\'s hourly and round limits, over-cap posts become drafts), "draft" stores a PENDING DRAFT for the user\'s review (outcome "draft-queued": nothing was sent yet — do not call the tool again for the same reply), "notify" refuses (the alter does not speak in that group). Fails if the gid is not one of the user\'s groups.',
+    description: 'Post a text message into one of the user\'s SoulMirror groups (by gid) as the user\'s alter. On the user\'s instruction the post goes out directly. When you are answering a group message, the group profile\'s agent tier decides: "auto" and "draft" both post directly (capped by the group\'s hourly and round limits; over-cap posts become PENDING DRAFTS — outcome "draft-queued": nothing was sent yet, do not call the tool again for the same reply), "notify" refuses (the alter does not speak in that group). Only a named seat agent with its per-agent approval switch on still drafts in the "draft" tier. Fails if the gid is not one of the user\'s groups.',
     parameters: {
       gid: { type: 'string', description: 'Group id (from the group roster or the message that woke you).' },
       body: { type: 'string', description: 'Message text.' },
@@ -297,8 +297,11 @@ export function apply(ctx: Context): void {
         // Own-post hook: the owner mentioned this voice in their OWN group post — an instruction in group clothing, sends directly.
         fromOwner: trigger.kind === 'group' && trigger.fp !== undefined && ownFp !== '' && trigger.fp === ownFp,
         speakAgents: profile.speakAgents,
-        // A named seat agent without the approval switch answers directly (its 'draft' lifts to 'auto'); the alter keeps the group tier.
-        tier: voice?.kind === 'agent' ? effectiveAgentTier(profile.agentTier, voice.agent.approval === true) : profile.agentTier,
+        // The group 'draft' tier lifts to 'auto' for direct posting: always for the
+        // alter (owner decision 2026-08-26 — alter group replies need no review; the
+        // mechanical caps below still apply), and for a named seat agent unless its
+        // per-agent approval switch is on. The group's 'notify' still refuses.
+        tier: effectiveAgentTier(profile.agentTier, voice?.kind === 'agent' && voice.agent.approval === true),
         autoSentInWindow: countAutoInWindow(caps),
         autoPerHour: profile.autoPerHour,
         roundsExceeded: agentRoundsExceeded(caps, profile.agentRounds),

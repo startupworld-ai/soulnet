@@ -75,6 +75,15 @@ jobs:
           NPM_CONFIG_PROVENANCE: ${{ vars.NPM_PROVENANCE == 'true' && 'true' || 'false' }}
         run: |
           for dir in packages/soulnet-win32-x64 packages/soulnet-darwin-arm64 packages/soulnet-darwin-x64 packages/soulnet-linux-x64 packages/soulnet-linux-arm64 packages/dsh; do
+            name=$(node -p "require('./$dir/package.json').name")
+            ver=$(node -p "require('./$dir/package.json').version")
+            # Idempotent: releases are sometimes published by hand first and the
+            # tag pushed afterwards - an already-published exact version is a
+            # skip, not a failure.
+            if npm view "$name@$ver" version >/dev/null 2>&1; then
+              echo "skip $name@$ver (already on the registry)"
+              continue
+            fi
             echo "::group::publish $dir"
             (cd "$dir" && pnpm publish --access public --no-git-checks)
             echo "::endgroup::"

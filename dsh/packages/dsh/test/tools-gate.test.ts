@@ -22,7 +22,7 @@ import type { Fingerprint } from '../src/events.ts'
 import { createFakeNetworkClient, FAKE_FRIENDS } from '../src/network/fake.ts'
 import { HourlyWindow, type ReplyTier } from '../src/policy.ts'
 import type { AlterSessions, SessionsEvent } from '../src/sessions/index.ts'
-import { ownerMessageFor, userMessageFor } from '../src/sessions/index.ts'
+import { groupMessageFor, ownerMessageFor, userMessageFor } from '../src/sessions/index.ts'
 import { triggerOf } from '../src/alter-state.ts'
 import { apply, decideSend } from '../src/tools/index.ts'
 
@@ -156,6 +156,7 @@ let seq = 0
 const ev = (type: string, data: unknown): unknown => ({ type, seq: seq++, time: Date.now(), data })
 const ownerTurn = (): unknown[] => [ev('turn/start', { turn: 1 }), ev('user/message', ownerMessageFor('tell Bob yes'))]
 const inboundTurn = (auto?: true, fp: string = BOB, name = 'Bob'): unknown[] => [ev('turn/start', { turn: 1 }), ev('user/message', userMessageFor({ id: 'in-1' as never, from: fp as Fingerprint, name, body: 'hi?', ts: Date.now(), ...(auto ? { auto } : {}) }, name))]
+const groupTurn = (gid: string, fp: string = BOB, name = 'Bob', body = 'what does everyone think?'): unknown[] => [ev('turn/start', { turn: 1 }), ev('user/message', groupMessageFor({ id: 'gm-1' as never, from: fp as Fingerprint, name, body, ts: Date.now() }, gid, 'the group'))]
 
 describe('decideSend', () => {
   it('maps the session and trigger to a gate decision; no face → unknown trigger → draft', () => {
@@ -246,6 +247,29 @@ describe('soulmirror_send_message gate', () => {
     expect(await refused.send({ fingerprint: BOB, body: 'x' }, ownerTurn())).toMatchObject({ ok: false, outcome: 'rejected', gate: 'unknown-trigger' })
     const nobody = harness({ sessions: false })
     expect(await nobody.send({ fingerprint: BOB, body: 'x' }, ownerTurn())).toMatchObject({ ok: false, outcome: 'unavailable' })
+  })
+})
+
+describe('soulmirror_send_group_message gate (alter voice)', () => {
+  // Owner decision 2026-08-26: the alter's group replies need no review — the
+  // group profile's 'draft' tier lifts to 'auto' for the alter voice.
+  it("group-triggered alter reply in the profile's draft tier posts DIRECTLY, flagged auto, no draft", async () => {
+    const h = harness({ approval: 'rejected' }) // an answerer that would refuse — it must not even be asked
+    const info = await h.net.groups.create('draft-tier-group', [BOB], { speakHumans: true, speakAgents: true, agentTier: 'draft' })
+    const result = await h.sendGroup({ gid: info.gid, body: 'direct group reply' }, groupTurn(info.gid), SESSION_ALTER)
+    expect(result).toMatchObject({ ok: true, outcome: 'sent', gate: 'auto-tier', auto: true, status: 'sent' })
+    expect(h.drafts.count()).toBe(0)
+    expect(h.approvals).toEqual([])
+    const { entries } = await h.net.groups.conversation(info.gid, { limit: 10 })
+    expect(entries.find(e => e.dir === 'out')).toMatchObject({ body: 'direct group reply', by: 'alter', auto: true })
+  })
+
+  it('the notify tier still refuses the alter (observe only, unchanged)', async () => {
+    const h = harness()
+    const info = await h.net.groups.create('notify-group', [BOB], { speakHumans: true, speakAgents: true, agentTier: 'notify' })
+    const result = await h.sendGroup({ gid: info.gid, body: 'should not go out' }, groupTurn(info.gid), SESSION_ALTER)
+    expect(result).toMatchObject({ ok: false, outcome: 'refused', gate: 'notify-tier' })
+    expect(h.drafts.count()).toBe(0)
   })
 })
 

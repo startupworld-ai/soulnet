@@ -11,7 +11,7 @@
  */
 import { api, networkStore, type ApiChat, type NetworkEventFrame } from './api.ts'
 import {
-  addOptimistic, agentOf, ALTER_KEY, applyArchive, applyInbound, applyOutbound, DEFAULT_PANE_TAB, dropEntry, EMPTY_THREAD, failSend, gidOf, groupKey, PAGE_SIZE, reconcileSend,
+  addOptimistic, agentOf, ALTER_KEY, applyArchive, applyInbound, applyOutbound, DEFAULT_PANE_TAB, dropEntry, EMPTY_THREAD, failSend, gidOf, groupKey, kindOf, PAGE_SIZE, reconcileSend, tabsFor,
   type Col2Tab, type PaneTab, type ThreadState,
 } from './page-state.ts'
 
@@ -57,8 +57,21 @@ const PAGE_STORAGE_KEY = 'soulmirror.page'
 /** Debounce of the localStorage write (bursts of selection / tab changes). */
 const PERSIST_MS = 250
 
-const PANE_TABS: readonly PaneTab[] = ['chat', 'announce', 'home', 'members', 'admin', 'info', 'settings']
+const PANE_TABS: readonly PaneTab[] = ['chat', 'announce', 'home', 'members', 'admin', 'info', 'memory', 'settings']
 const COL2_TABS: readonly Col2Tab[] = ['messages', 'contacts']
+
+/**
+ * A persisted `paneTab` only makes sense for the selection it was saved under:
+ * the friend it belonged to may be gone (the page then falls back to the alter,
+ * whose tab set has no `members`), leaving the strip with nothing highlighted
+ * and the body on a silent fallback. Clamp to what this selection offers.
+ * `canAdmin` is false here on purpose — the roster is not loaded yet, so a
+ * restored `admin` tab must not paint group management for a plain member.
+ */
+function clampPaneTab(tab: unknown, selected: string | undefined): PaneTab {
+  if (!PANE_TABS.includes(tab as PaneTab)) return DEFAULT_PANE_TAB
+  return tabsFor(kindOf(selected), false).includes(tab as PaneTab) ? tab as PaneTab : DEFAULT_PANE_TAB
+}
 
 /** The navigation state we persist, guarded for non-browser envs (unit tests run under node). */
 function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab' | 'paneTab'> {
@@ -68,11 +81,12 @@ function loadPersistedPage(): Pick<PageSnapshot, 'open' | 'selected' | 'col2Tab'
     const raw = localStorage.getItem(PAGE_STORAGE_KEY)
     if (raw === null) return fallback
     const p = JSON.parse(raw) as Partial<PageSnapshot>
+    const selected = typeof p.selected === 'string' ? p.selected : undefined
     return {
       open: p.open === true,
-      selected: typeof p.selected === 'string' ? p.selected : undefined,
+      selected,
       col2Tab: COL2_TABS.includes(p.col2Tab as Col2Tab) ? p.col2Tab as Col2Tab : 'messages',
-      paneTab: PANE_TABS.includes(p.paneTab as PaneTab) ? p.paneTab as PaneTab : DEFAULT_PANE_TAB,
+      paneTab: clampPaneTab(p.paneTab, selected),
     }
   } catch {
     return fallback
@@ -96,7 +110,18 @@ export class PageStore {
    */
   private readonly inflightThreads = new Set<string>()
 
+  /** SSE came back after a gap: every loaded thread may have missed frames. */
+  private refetchLoadedThreads = (): void => {
+    for (const [key, t] of Object.entries(this.snapshot.threads)) {
+      if (!t.loaded) continue
+      const gid = gidOf(key)
+      if (gid !== undefined) void this.loadGroup(gid)
+      else if (agentOf(key) === undefined) void this.load(key)
+    }
+  }
+
   constructor() {
+    networkStore.onReconnect(this.refetchLoadedThreads)
     networkStore.onFrame(this.onFrame)
   }
 

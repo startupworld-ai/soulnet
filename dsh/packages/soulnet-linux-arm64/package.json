@@ -1,6 +1,6 @@
 {
   "name": "soulnet-peer-linux-arm64",
-  "version": "0.1.2",
+  "version": "0.1.9",
   "description": "The soulnet light peer binary for Linux arm64; installed automatically as an optional dependency of soulnet-dsh",
   "license": "MIT",
   "repository": {

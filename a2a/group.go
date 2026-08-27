@@ -409,8 +409,13 @@ func pruneSkipped(sk map[int]string) {
 // GroupKeyDist is the payload of a pairwise `group_key` message: the sender's chain key
 // for the group named by Message.GID, at index 0 of the given epoch.
 type GroupKeyDist struct {
-	Epoch int    `json:"epoch"`
-	Chain string `json:"chain"` // 32-byte chain key at index 0, base64
+	Epoch int `json:"epoch"`
+	// Index is the chain position the Chain below is AT (the sender's next message
+	// index). A late joiner gets the sender's CURRENT ratcheted chain, not the
+	// epoch's origin - storing it as index 0 desynchronizes the ratchet and every
+	// later message fails to decrypt. Absent (0) = an unadvanced chain.
+	Index int    `json:"index,omitempty"`
+	Chain string `json:"chain"` // 32-byte chain key at Index, base64
 }
 
 // ——— Group envelope (outer, relay-visible) ———

@@ -317,6 +317,14 @@ export interface NetworkClient {
   subscribe(listener: (event: NetworkEvent) => void): () => void
   /** Stop the backend (clean `shutdown` for the peer process). Idempotent. */
   dispose(): Promise<void>
+  /**
+   * Ask the backend to restart the HOST process after a self-upgrade: the
+   * peer spawns a detached helper that waits for this host (and the old peer)
+   * to die, then execs the command again. Present only on backends whose peer
+   * offers `host.relaunch` (soulnet >= 0.2); absent = the UI falls back to
+   * "restart dsh manually".
+   */
+  relaunch?(params: { pid: number; exec: string; argv: readonly string[]; cwd: string }): Promise<void>
   /** Test/dev seam: make the backend deliver an inbound message now. Absent on real backends. */
   readonly debug?: {
     inject(from: Fingerprint, body: string): void

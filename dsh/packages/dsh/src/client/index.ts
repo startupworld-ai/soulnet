@@ -50,6 +50,8 @@ import { pageStore } from './page-store.ts'
 import { SidebarEntry } from './SidebarEntry.tsx'
 import { SidebarNavEntry } from './SidebarNavEntry.tsx'
 import { SoulmirrorPage, type SoulmirrorPageInjected } from './SoulmirrorPage.tsx'
+import { UpdateAction } from './UpdateAction.tsx'
+import { upgradeStore } from './upgrade-store.ts'
 import { ensureStyles, removeStyles } from './styles.ts'
 
 export type { A2AChatData } from './a2a-node.ts'
@@ -105,6 +107,14 @@ export function apply(ctx: ClientContext): void {
     order: 0,
     locale: NS,
   }, SidebarEntry))
+  //     A one-click upgrade button appears in the same foot stack whenever a
+  //     newer release is known (owner-requested: a real button, not a dot).
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action',
+    id: 'soulmirror-update',
+    order: 1,
+    locale: NS,
+  }, UpdateAction))
   //     … and, when the SoulMirror sidebar (soulnet-dsh-sidebar) is installed,
   //     the same entry as the first primary-nav row under New Session; the
   //     foot entry then hides itself (nav-seat.ts). This inject callback only
@@ -173,19 +183,48 @@ export function apply(ctx: ClientContext): void {
     inject: overlayInjected,
   }, InboxOverlay))
 
-  // 3. Settings section backed by the host `soulmirror` namespace.
+  // 3. Settings section backed by the host `soulmirror` namespace. One SILENT
+  //    update check per page load; a newer published version puts a dot on
+  //    the section's nav label (the store answers before Settings is opened)
+  //    and the full badge inside the "Version & updates" card.
+  void upgradeStore.check({ silent: true })
+  // A page left open would otherwise never learn of a new release: re-check
+  // silently every 5 minutes (a lightweight metadata GET; the badge appears
+  // by itself).
+  ctx.effect(() => {
+    const timer = setInterval(() => { void upgradeStore.check({ silent: true, refresh: true }) }, 5 * 60_000)
+    return () => { clearInterval(timer) }
+  })
   const settingsInjected = (): SoulmirrorSettingsInjected => ({
     openSession,
     scope,
   })
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: 'soulmirror',
-    order: 80,
-    locale: NS,
-    label: () => t('settings.nav'),
-    inject: settingsInjected,
-  }, SoulmirrorSettingsSection))
+  ctx.slots.inject('settings.section', () => {
+    // The host evaluates a slot label ONCE at registration - the silent
+    // update check answers later, so a label function alone never grows its
+    // dot. Re-register the section whenever hasUpdate flips.
+    const make = (): (() => void) => ctx.slots.register({
+      name: 'settings.section',
+      id: 'soulmirror',
+      order: 80,
+      locale: NS,
+      label: () => upgradeStore.getSnapshot().hasUpdate ? `${t('settings.nav')} ●` : t('settings.nav'),
+      inject: settingsInjected,
+    }, SoulmirrorSettingsSection)
+    let hadUpdate = upgradeStore.getSnapshot().hasUpdate
+    let disposeSection = make()
+    const unsubscribe = upgradeStore.subscribe(() => {
+      const now = upgradeStore.getSnapshot().hasUpdate
+      if (now === hadUpdate) return
+      hadUpdate = now
+      disposeSection()
+      disposeSection = make()
+    })
+    return () => {
+      unsubscribe()
+      disposeSection()
+    }
+  })
 
   // 4. First-run onboarding: create the identity (after dsh's own welcome/model steps).
   ctx.slots.inject('settings.onboarding', () => ctx.slots.register({

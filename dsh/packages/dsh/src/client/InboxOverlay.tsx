@@ -7,7 +7,6 @@
  * layer is click-through until an entry renders something).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Toast } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { networkStore } from './api.ts'
 import { shouldNotify, type MailNotice } from './inbox-state.ts'
@@ -35,17 +34,16 @@ export function InboxOverlay({ currentSessionId, t }: InboxOverlayProps) {
   const seq = useRef(0)
   useEffect(() => networkStore.onMail((notice) => {
     const page = pageStore.getSnapshot()
+    // The thread key of the notice: a group message belongs to its group
+    // conversation (fp is the sender there), a DM to the friend thread.
+    const threadKey = notice.gid !== undefined ? groupKey(notice.gid) : notice.fp
+    if (page.open && page.selected === threadKey) return
+    // do-not-disturb: muted friend / muted group
     const inbox = networkStore.getSnapshot().inbox
-    if (notice.gid !== undefined) {
-      // Group mail: suppress when that group is open on the page or muted.
-      if (page.open && page.selected === groupKey(notice.gid)) return
-      const group = inbox.groups.find(g => g.gid === notice.gid)
-      if (group?.muted === true) return
-    } else {
-      if (page.open && page.selected === notice.fp) return
-      const friend = inbox.friends.find(f => f.fp === notice.fp)
-      if (friend?.muted === true) return // do-not-disturb
-    }
+    const muted = notice.gid !== undefined
+      ? inbox.groups.find(g => g.gid === notice.gid)?.muted === true
+      : inbox.friends.find(f => f.fp === notice.fp)?.muted === true
+    if (muted) return
     if (!shouldNotify(notice, currentSessionId())) return
     seq.current += 1
     const entry: ToastEntry = { ...notice, key: seq.current }
@@ -64,5 +62,17 @@ export function InboxOverlay({ currentSessionId, t }: InboxOverlayProps) {
 }
 
 function MailToast({ entry, t, onDone }: { entry: ToastEntry; t: InboxOverlayProps['t']; onDone: () => void }) {
-  return <Toast text={t('toast.newMail', { name: entry.name })} icon={<SoulMirrorIcon size={16} />} onDone={onDone} />
+  // Own themed pill instead of the host Toast (whose surface stays light on
+  // the dark theme); auto-dismisses, click dismisses early.
+  useEffect(() => {
+    const timer = setTimeout(onDone, 4_500)
+    return () => { clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return (
+    <button type="button" className="sm-mail-toast" onClick={onDone} data-soulmirror-mail-toast>
+      <SoulMirrorIcon size={16} />
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t('toast.newMail', { name: entry.name })}</span>
+    </button>
+  )
 }
