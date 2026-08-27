@@ -39,16 +39,20 @@ echo "-- [1/7] pnpm install + build (soulnet-dsh, soulnet-dsh-sidebar)"
 # -------------------------------------------------------------- [2] peer x2
 echo "-- [2/7] go build soulnet peer (darwin x64 + arm64)"
 for arch in x64 arm64; do
-  ( cd "$ROOT" && GOOS=darwin GOARCH=$arch CGO_ENABLED=0 \
+  goarch=$arch; [[ $arch == x64 ]] && goarch=amd64   # npm says x64, Go says amd64
+  ( cd "$ROOT" && GOOS=darwin GOARCH=$goarch CGO_ENABLED=0 \
       go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" \
       -o "$DSH_DIR/packages/soulnet-darwin-$arch/bin/soulnet" ./cmd/soulnet )
+  ( cd "$ROOT" && GOOS=darwin GOARCH=$goarch CGO_ENABLED=0 \
+      go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" \
+      -o "$DSH_DIR/packages/soulnet-paygate-darwin-$arch/bin/paygate" ./payment/cmd/paygate )
 done
 
 # -------------------------------------------------------------- [3] tarballs
 rm -rf "$STAGE"
 TARBALLS="$ROOT/.installer-stage/tarballs-mac"
 rm -rf "$TARBALLS"; mkdir -p "$TARBALLS"
-for pkg in soulnet-darwin-x64 soulnet-darwin-arm64 dsh sidebar; do
+for pkg in soulnet-darwin-x64 soulnet-darwin-arm64 soulnet-paygate-darwin-x64 soulnet-paygate-darwin-arm64 dsh sidebar; do
   ( cd "$DSH_DIR/packages/$pkg" && pnpm pack --pack-destination "$TARBALLS" >/dev/null )
 done
 
@@ -129,6 +133,8 @@ EOF
 for tgz in "$TARBALLS"/soulnet-dsh-[0-9]*.tgz \
            "$TARBALLS"/soulnet-peer-darwin-x64-*.tgz \
            "$TARBALLS"/soulnet-peer-darwin-arm64-*.tgz \
+           "$TARBALLS"/soulnet-paygate-darwin-x64-*.tgz \
+           "$TARBALLS"/soulnet-paygate-darwin-arm64-*.tgz \
            "$TARBALLS"/soulnet-dsh-sidebar-*.tgz; do
   rm -rf "$STAGE/pkg"; mkdir -p "$STAGE/pkg"
   tar -xzf "$tgz" -C "$STAGE/pkg"
@@ -138,6 +144,8 @@ done
 rm -rf "$STAGE/pkg"
 [[ -f "$WEB/node_modules/soulnet-peer-darwin-x64/bin/soulnet" ]] || {
   echo "error: darwin-x64 peer missing from template" >&2; exit 1; }
+[[ -f "$WEB/node_modules/soulnet-paygate-darwin-x64/bin/paygate" ]] || {
+  echo "error: darwin-x64 paygate missing from template" >&2; exit 1; }
 [[ -f "$WEB/node_modules/soulnet-peer-darwin-arm64/bin/soulnet" ]] || {
   echo "error: darwin-arm64 peer missing from template" >&2; exit 1; }
 PLUGIN_SHA="$(shasum -a 256 "$TARBALLS"/soulnet-dsh-[0-9]*.tgz | cut -c1-16)"
