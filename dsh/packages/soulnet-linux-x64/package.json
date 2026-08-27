@@ -1,6 +1,6 @@
 {
   "name": "soulnet-peer-linux-x64",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "The soulnet light peer binary for Linux x64; installed automatically as an optional dependency of soulnet-dsh",
   "license": "MIT",
   "repository": {

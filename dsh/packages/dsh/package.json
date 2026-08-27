@@ -1,6 +1,6 @@
 {
   "name": "soulnet-dsh",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "SoulMirror network for DeepSeek Harness: A2A identity, friends and end-to-end encrypted chat as dsh sessions -- host plugins + browser UI bundle, backed by the soulnet light peer (shipped as a platform package)",
   "keywords": [
     "dsh-plugin",

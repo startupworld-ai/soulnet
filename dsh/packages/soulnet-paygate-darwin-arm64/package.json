@@ -1,6 +1,6 @@
 {
   "name": "soulnet-paygate-darwin-arm64",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "The soulnet local payment gateway (paygate) binary for macOS Apple silicon (arm64); installed automatically as an optional dependency of soulnet-dsh",
   "license": "MIT",
   "repository": {
