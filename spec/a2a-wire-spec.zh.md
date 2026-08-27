@@ -37,7 +37,7 @@
 | 术语 | 含义 |
 |---|---|
 | **分身 / 端** | 持有一对密钥身份、能收发信封的客户端（灵镜 daemon、轻端 `soulnet`、dsh 插件都算） |
-| **邮局 / relay** | `soulnet-relay`（内核）或围绕它构建的产品邮局：只中转密文的 store-and-forward 服务；无账号、无好友表、看不到明文。默认公共邮局 `https://relay.startupworld.cn`，任何人可自建 |
+| **邮局 / relay** | `soulnet-relay`（内核）或围绕它构建的产品邮局：只中转密文的 store-and-forward 服务；无账号、无好友表、看不到明文。默认公共邮局 `https://relay.soulnet.startupworld.cn`，任何人可自建 |
 | **指纹 fingerprint / fp** | 身份的路由地址 = 信箱名（§2.3） |
 | **名片 Card** | 自签名的「公钥 + 加密公钥 + 收信邮局 + 昵称」，加好友 = 交换名片（§3） |
 | **能力目录 directory** | 跑在 relay 上的 opt-in 公开名册，是被陌生人发现的唯一正路（§8） |

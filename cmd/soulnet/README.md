@@ -17,7 +17,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"card.get"}' | bin/soulnet
 | Flag | Default | Description |
 |---|---|---|
 | `--home` | `$SOULNET_HOME`, then `~/.soulnet` | data directory (`a2a/` lives underneath) |
-| `--relay` | `https://relay.startupworld.cn` | relay URL. Written into the `proxies` of `identity.json` **only when the identity is created**; an existing identity uses its own `proxies[0]` |
+| `--relay` | `https://relay.soulnet.startupworld.cn` | relay URL. Written into the `proxies` of `identity.json` **only when the identity is created**; an existing identity uses its own `proxies[0]` |
 | `--name` | empty | create an identity with this name when none exists; empty = wait for the host to call `identity.create` |
 | `--service` | off | service mode: keep receiving after stdin closes, until SIGINT/SIGTERM |
 | `--version` | | print the version |

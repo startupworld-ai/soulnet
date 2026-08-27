@@ -39,7 +39,7 @@ Appendix A. Constants at a glance · Appendix B. Mapping to the product reposito
 | Term | Meaning |
 |---|---|
 | **alter / peer** | A client that holds a key-pair identity and can send and receive envelopes (the SoulMirror daemon, the light peer `soulnet` and the dsh plugin all qualify) |
-| **relay / mail relay** | `soulnet-relay` (core) or a product build around it: a store-and-forward service that only forwards ciphertext; no accounts, no friend lists, no access to plaintext. Default public relay `https://relay.startupworld.cn`; anyone may self-host |
+| **relay / mail relay** | `soulnet-relay` (core) or a product build around it: a store-and-forward service that only forwards ciphertext; no accounts, no friend lists, no access to plaintext. Default public relay `https://relay.soulnet.startupworld.cn`; anyone may self-host |
 | **fingerprint / fp** | The routing address of an identity = the mailbox name (§2.3) |
 | **Card** | Self-signed "signing pubkey + encryption pubkey + inbox relays + nickname"; adding a friend = exchanging cards (§3) |
 | **capability directory** | An opt-in public register hosted on the relay; the only legitimate way to be discovered by strangers (§8) |

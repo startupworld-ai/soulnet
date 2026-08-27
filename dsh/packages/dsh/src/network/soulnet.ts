@@ -48,7 +48,7 @@ import {
   type GroupCardView,
 } from './types.ts'
 
-export const DEFAULT_RELAY = 'https://relay.startupworld.cn'
+export const DEFAULT_RELAY = 'https://relay.soulnet.startupworld.cn'
 export const SOULNET_PROTOCOL = 'soulnet/1'
 
 export type SoulnetLogger = (level: 'info' | 'warn' | 'error', message: string) => void

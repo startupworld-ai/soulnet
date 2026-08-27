@@ -54,7 +54,7 @@ The SoulMirror product (`soulmirror`, closed source) imports this module; protoc
 - An **identity is a key pair** (Ed25519 for signing, X25519 for encryption); the fingerprint `base64url(SHA-256(ed_pub)[:16])` is the routing address. There is no registration, no account.
 - A **card** is the self-signed `soulmirror://card?…` URI carrying the two public keys, the inbox relays and a nickname; adding a friend = exchanging cards.
 - The **relay** (`soulnet-relay`) is a dumb store-and-forward mailbox that only ever sees ciphertext: `POST /mail`, `GET /mail` (long poll), `POST /mail/ack`. It also hosts the opt-in capability **directory**. Anyone can self-host one. (The CL ledger / economy endpoints of spec §9 are currently served by the SoulMirror product's relay extension, not by the core; they open up with protocol v3.)
-- Default public relay: `https://relay.startupworld.cn`.
+- Default public relay: `https://relay.soulnet.startupworld.cn`.
 
 Everything above is pinned byte-by-byte in `spec/a2a-wire-spec.md`; `spec/vectors/` lets any implementation prove conformance. The light peer's JSON-RPC surface is documented in `cmd/soulnet/README.md`.
 
