@@ -19,7 +19,7 @@
  * `ctx.commandUi`); the only value imports are react, ui-primitives and this
  * package's own files (bundle purity).
  */
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: ctx.locale, ctx.commandUi, ctx.settingsScope, the conversation/settings SlotMap rows.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-commands/client'
@@ -85,7 +85,6 @@ export function apply(ctx: ClientContext): void {
   // SoulMirror branding (sidebar brand slots, title, favicon) + the
   // Discord-flavoured dark palette over the whole shell (./Branding.tsx).
   installBranding(ctx)
-  const openSession = (id: string): void => { ctx.sessions.open(id as SessionId) }
 
   // 1. Inbound mail / plugin notes → `a2a-message` nodes (engine), then the
   //    keyed renderer (slot) for the native alter session view.
@@ -138,7 +137,7 @@ export function apply(ctx: ClientContext): void {
   //     sidebar (the settings scope is bound once below; the page reads
   //     `directSend` from it live)
   const scope = ctx.settingsScope.bind<SoulmirrorSettingsValues>({ namespace: SETTINGS_NAMESPACE })
-  const pageInjected = (): SoulmirrorPageInjected => ({ openSession, scope })
+  const pageInjected = (): SoulmirrorPageInjected => ({ scope })
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
     id: 'soulmirror-page',
@@ -196,7 +195,6 @@ export function apply(ctx: ClientContext): void {
     return () => { clearInterval(timer) }
   })
   const settingsInjected = (): SoulmirrorSettingsInjected => ({
-    openSession,
     scope,
   })
   ctx.slots.inject('settings.section', () => {

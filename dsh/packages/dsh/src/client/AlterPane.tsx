@@ -25,8 +25,6 @@ import { SoulMirrorIcon } from './SidebarEntry.tsx'
 
 export interface AlterPaneProps {
   t: Translate
-  /** Open the alter's dsh session (closes the page). */
-  onOpenSession: (sessionId: string) => void
   /** Jump to a friend's read-only thread. */
   onGoFriend: (fp: string) => void
   /** Jump to a group's chat (from a group message relayed into the alter). */
@@ -49,7 +47,7 @@ function dayOf(ts: number): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
-export function AlterPane({ t, onOpenSession, onGoFriend, onGoGroup, renderCards, scope }: AlterPaneProps) {
+export function AlterPane({ t, onGoFriend, onGoGroup, renderCards, scope }: AlterPaneProps) {
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   const alter = page.alter
@@ -268,7 +266,6 @@ export function AlterPane({ t, onOpenSession, onGoFriend, onGoGroup, renderCards
   const cardProps: AlterCardOwnerProps = {
     alter: { sessionId: alter.sessionId, status: alter.status },
     scope,
-    openSession: () => { if (alter.sessionId !== undefined) onOpenSession(alter.sessionId) },
   }
   const alterSettings = (
     <div className="sm-home" data-soulmirror-alter-settings>

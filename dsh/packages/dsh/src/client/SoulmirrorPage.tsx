@@ -31,8 +31,6 @@ import { pageStore } from './page-store.ts'
 import type { SoulmirrorSettingsValues } from './SettingsSection.tsx'
 
 export interface SoulmirrorPageInjected {
-  /** Select a session as current (ctx.sessions.open). */
-  openSession: (sessionId: string) => void
   /** Bound settings scope of the `soulmirror` namespace (the page reads the debug `directSend` toggle live). */
   scope: SettingsScope<SoulmirrorSettingsValues>
 }
@@ -62,7 +60,7 @@ function sidebarColumnOf(pageRoot: HTMLElement | null): { column: HTMLElement; f
   return undefined
 }
 
-export function SoulmirrorPage({ openSession, scope, t, renderSlot }: SoulmirrorPageProps) {
+export function SoulmirrorPage({ scope, t, renderSlot }: SoulmirrorPageProps) {
   const page = useSyncExternalStore(pageStore.subscribe, pageStore.getSnapshot)
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   const subscribeScope = useCallback((listener: () => void) => scope.subscribe(listener), [scope])
@@ -179,10 +177,6 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
   const goAlter = (): void => { pageStore.select(ALTER_KEY) }
   const goFriend = (fp: string): void => { pageStore.select(fp) }
   const goGroup = (gid: string): void => { pageStore.select(groupKey(gid)) }
-  const openAlterSession = (sessionId: string): void => {
-    openSession(sessionId)
-    pageStore.close()
-  }
 
   return (
     <div ref={root} className="sm-page-root" style={{ left }} role="dialog" aria-label={t('page.title')} data-soulmirror-page data-soulmirror-page-left={left}>
@@ -198,8 +192,8 @@ export function SoulmirrorPage({ openSession, scope, t, renderSlot }: Soulmirror
         : group !== undefined
           ? <GroupPane t={t} group={group} visible={page.open} onGoAlter={goAlter} renderRoom={renderSlot} />
           : seatAgent !== undefined
-            ? <AgentPane t={t} agent={seatAgent} onOpenSession={openAlterSession} onRemoved={goAlter} />
-            : <AlterPane t={t} onOpenSession={openAlterSession} onGoFriend={goFriend} onGoGroup={goGroup} renderCards={renderSlot} scope={scope} />}
+            ? <AgentPane t={t} agent={seatAgent} onRemoved={goAlter} />
+            : <AlterPane t={t} onGoFriend={goFriend} onGoGroup={goGroup} renderCards={renderSlot} scope={scope} />}
     </div>
   )
 }

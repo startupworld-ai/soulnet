@@ -34,8 +34,6 @@ export interface SoulmirrorSettingsValues {
 }
 
 export interface SoulmirrorSettingsInjected {
-  /** Select a session as current (ctx.sessions.open) — used for "Open the alter session in dsh". */
-  openSession: (id: string) => void
   /** Bound settings scope of the `soulmirror` namespace. */
   scope: SettingsScope<SoulmirrorSettingsValues>
 }
@@ -179,7 +177,7 @@ function binarySourceLabel(t: SoulmirrorSettingsProps['t'], source: string): str
   return key === undefined ? source : t(key)
 }
 
-export function SoulmirrorSettingsSection({ openSession, scope, t }: SoulmirrorSettingsProps) {
+export function SoulmirrorSettingsSection({ scope, t }: SoulmirrorSettingsProps) {
   const net = useSyncExternalStore(networkStore.subscribe, networkStore.getSnapshot)
   // The scope is a class instance (methods need `this`): wrap instead of passing them unbound.
   const subscribeScope = useCallback((listener: () => void) => scope.subscribe(listener), [scope])

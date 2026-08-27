@@ -29,15 +29,13 @@ export interface AlterCardAlter {
 /**
  * Owner props of one `alter.card` occupant: everything a card needs to render
  * one module of the alter's page. `scope` is the live `soulmirror` settings
- * namespace (a card reads values via `getSnapshot()` and writes via `set`),
- * `openSession` jumps to the alter's native dsh session. The contract is
- * deliberately small and additive — new cards extend the SURFACE (their own
- * settings / data) rather than this shape.
+ * namespace (a card reads values via `getSnapshot()` and writes via `set`).
+ * The contract is deliberately small and additive — new cards extend the
+ * SURFACE (their own settings / data) rather than this shape.
  */
 export interface AlterCardOwnerProps {
   readonly alter: AlterCardAlter
   readonly scope: SettingsScope<SoulmirrorSettingsValues>
-  readonly openSession: () => void
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
