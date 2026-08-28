@@ -37,7 +37,7 @@ echo "-- [1/7] pnpm install + build (soulnet-dsh, soulnet-dsh-sidebar)"
 ( cd "$DSH_DIR" && pnpm --filter soulnet-dsh --filter soulnet-dsh-sidebar run build )
 
 # -------------------------------------------------------------- [2] peer x2
-echo "-- [2/7] go build soulnet peer (darwin x64 + arm64)"
+echo "-- [2/7] go build soulnet peer + paygate (darwin x64 + arm64)"
 for arch in x64 arm64; do
   goarch=$arch; [[ $arch == x64 ]] && goarch=amd64   # npm says x64, Go says amd64
   ( cd "$ROOT" && GOOS=darwin GOARCH=$goarch CGO_ENABLED=0 \
@@ -129,11 +129,11 @@ nodeLinker: hoisted
 autoInstallPeers: false
 EOF
 
-# seed node_modules from our tarballs: soulnet-dsh + both darwin peers + sidebar.
+# seed node_modules from our tarballs: soulnet-dsh + both darwin peers + paygates + sidebar.
 for tgz in "$TARBALLS"/soulnet-dsh-[0-9]*.tgz \
            "$TARBALLS"/soulnet-peer-darwin-x64-*.tgz \
-           "$TARBALLS"/soulnet-peer-darwin-arm64-*.tgz \
            "$TARBALLS"/soulnet-paygate-darwin-x64-*.tgz \
+           "$TARBALLS"/soulnet-peer-darwin-arm64-*.tgz \
            "$TARBALLS"/soulnet-paygate-darwin-arm64-*.tgz \
            "$TARBALLS"/soulnet-dsh-sidebar-*.tgz; do
   rm -rf "$STAGE/pkg"; mkdir -p "$STAGE/pkg"
@@ -148,6 +148,8 @@ rm -rf "$STAGE/pkg"
   echo "error: darwin-x64 paygate missing from template" >&2; exit 1; }
 [[ -f "$WEB/node_modules/soulnet-peer-darwin-arm64/bin/soulnet" ]] || {
   echo "error: darwin-arm64 peer missing from template" >&2; exit 1; }
+[[ -f "$WEB/node_modules/soulnet-paygate-darwin-arm64/bin/paygate" ]] || {
+  echo "error: darwin-arm64 paygate missing from template" >&2; exit 1; }
 PLUGIN_SHA="$(shasum -a 256 "$TARBALLS"/soulnet-dsh-[0-9]*.tgz | cut -c1-16)"
 printf '%s %s\n' "$VERSION" "$PLUGIN_SHA" > "$WEB/.soulmirror-template-version"
 
