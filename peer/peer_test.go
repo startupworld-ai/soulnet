@@ -247,7 +247,7 @@ func TestChunkedFileTransfer(t *testing.T) {
 		t.Fatalf("sender should keep a local copy: %v", err)
 	}
 	// staging dir is gone
-	if _, err := os.Stat(b.incomingDir(a.Fingerprint(), ann.Message.ArtifactID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(b.IncomingDir(a.Fingerprint(), ann.Message.ArtifactID)); !os.IsNotExist(err) {
 		t.Fatal("staging dir should be removed after reassembly")
 	}
 	// chunk records are not shown in the conversation

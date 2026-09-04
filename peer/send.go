@@ -86,7 +86,7 @@ func (n *Peer) SendWith(ctx context.Context, to, body string, opts SendOptions) 
 		if len(artRaw) > 0 {
 			msg.ArtifactName = artName
 			msg.Artifact = base64.StdEncoding.EncodeToString(artRaw)
-			n.persistArtifactBytes(fr.Fingerprint, msg.ID, artName, artRaw)
+			n.PersistArtifactBytes(fr.Fingerprint, msg.ID, artName, artRaw)
 		}
 		if err := n.sendMessage(ctx, fr.Card, msg); err != nil {
 			res.Status = "queued"
@@ -122,7 +122,7 @@ func (n *Peer) Typing(ctx context.Context, to string, on bool) error {
 	if err != nil {
 		return err
 	}
-	return n.deliverToCard(ctxOrBackground(ctx), fr.Card, env)
+	return n.DeliverToCard(ctxOrBackground(ctx), fr.Card, env)
 }
 
 // sendChunked sends a large file in chunks: the announcement (this text message carries
@@ -141,7 +141,7 @@ func (n *Peer) sendChunked(ctx context.Context, fr *a2a.Friend, announce *a2a.Me
 	announce.ArtifactSHA = sha
 	announce.ArtifactSize = size
 	announce.Artifact = ""
-	n.persistArtifactBytes(fr.Fingerprint, artifactID, name, raw)
+	n.PersistArtifactBytes(fr.Fingerprint, artifactID, name, raw)
 
 	firstErr := n.sendMessage(ctx, fr.Card, announce)
 	for i, c := range chunks {
@@ -171,7 +171,7 @@ func (n *Peer) sendMessage(ctx context.Context, toCard *a2a.Card, msg *a2a.Messa
 	if err != nil {
 		return err
 	}
-	if err := n.deliverToCard(ctx, toCard, env); err != nil {
+	if err := n.DeliverToCard(ctx, toCard, env); err != nil {
 		n.logf("delivery failed (queued for retry): %v", err)
 		if qerr := n.queueOutbox(toCard, env); qerr != nil {
 			return fmt.Errorf("delivery failed and could not be queued: %v / %v", err, qerr)
@@ -199,9 +199,9 @@ func (n *Peer) seal(toCard *a2a.Card, msg *a2a.Message) (*a2a.Envelope, error) {
 // or Send would stall the host whenever a relay is down.
 const DeliverTimeout = a2a.DefaultDeliverTimeout
 
-// deliverToCard tries each relay in the card in order. Any failure is wrapped in
-// ErrNetwork so the host can map it to its network error code.
-func (n *Peer) deliverToCard(ctx context.Context, card *a2a.Card, env *a2a.Envelope) error {
+// DeliverToCard tries each relay in the card in order (short DeliverTimeout per attempt).
+// Any failure is wrapped in ErrNetwork so the host can map it to its network error code.
+func (n *Peer) DeliverToCard(ctx context.Context, card *a2a.Card, env *a2a.Envelope) error {
 	id := n.Identity()
 	var lastErr error
 	for _, proxy := range card.Proxies {
@@ -242,7 +242,7 @@ func (n *Peer) flushOutbox(ctx context.Context) int {
 			_ = a2a.RemoveOutbox(n.outboxDir(), e.Name)
 			continue
 		}
-		if err := n.deliverToCard(ctx, e.Item.Card, e.Item.Env); err != nil {
+		if err := n.DeliverToCard(ctx, e.Item.Card, e.Item.Env); err != nil {
 			return sent
 		}
 		_ = a2a.RemoveOutbox(n.outboxDir(), e.Name)
@@ -265,7 +265,9 @@ func (n *Peer) OutboxLen() int {
 
 // ——— attachments on disk (same layout as SoulMirror: a2a/artifacts/<peer>/<msgID or artifactID>__<name>) ———
 
-func (n *Peer) artifactPath(peer, key, name string) string {
+// ArtifactPath is where an attachment lives on disk: a2a/artifacts/<peer>/<key>__<name>,
+// key being the message id (inline attachment) or the artifact id (chunked transfer).
+func (n *Peer) ArtifactPath(peer, key, name string) string {
 	return filepath.Join(n.Home, "a2a", "artifacts", a2a.SanitizeID(peer), a2a.SanitizeID(key)+"__"+name)
 }
 
@@ -275,15 +277,17 @@ func (n *Peer) ArtifactFile(peer, key, name string) (string, error) {
 	if name == "" || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
 		return "", fmt.Errorf("invalid attachment name")
 	}
-	p := n.artifactPath(peer, key, name)
+	p := n.ArtifactPath(peer, key, name)
 	if _, err := os.Stat(p); err != nil {
 		return "", fmt.Errorf("attachment not found")
 	}
 	return p, nil
 }
 
-func (n *Peer) persistArtifactBytes(peer, key, name string, raw []byte) string {
-	p := n.artifactPath(peer, key, name)
+// PersistArtifactBytes writes an attachment to ArtifactPath(peer, key, name) and returns
+// the path ("" when writing failed; the failure is logged).
+func (n *Peer) PersistArtifactBytes(peer, key, name string, raw []byte) string {
+	p := n.ArtifactPath(peer, key, name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		n.logf("writing attachment failed: %v", err)
 		return ""

@@ -102,7 +102,9 @@ type GroupView struct {
 	Applications []GroupApplicationView `json:"applications,omitempty"`
 }
 
-func (n *Peer) groupSummary(st *a2a.GroupState) GroupSummary {
+// GroupSummaryOf builds the list row of one group state (counts, unread, last entry,
+// removed marker) without touching the member cards - cheap enough for a large roster.
+func (n *Peer) GroupSummaryOf(st *a2a.GroupState) GroupSummary {
 	gid := st.Roster.GroupID
 	count, last, unread := n.Convs.Summary(a2a.GroupConvKey(gid), st.LastReadAt)
 	s := GroupSummary{GID: gid, Name: st.Roster.Name, OwnerFp: st.Roster.OwnerFp(),
@@ -117,7 +119,7 @@ func (n *Peer) groupSummary(st *a2a.GroupState) GroupSummary {
 }
 
 func (n *Peer) groupView(st *a2a.GroupState) *GroupView {
-	v := &GroupView{GroupSummary: n.groupSummary(st)}
+	v := &GroupView{GroupSummary: n.GroupSummaryOf(st)}
 	me := n.Fingerprint()
 	switch {
 	case st.Roster.OwnerFp() == me:
@@ -161,7 +163,7 @@ func (n *Peer) sendGroupPairwise(ctx context.Context, card *a2a.Card, msg *a2a.M
 		return err
 	}
 	env.FromXPub = n.Identity().XPub // the receiver may not hold our card (co-member, not friend)
-	if err := n.deliverToCard(ctx, card, env); err != nil {
+	if err := n.DeliverToCard(ctx, card, env); err != nil {
 		n.logf("group pairwise delivery failed (queued): %v", err)
 		if qerr := n.queueOutbox(card, env); qerr != nil {
 			return fmt.Errorf("delivery failed and could not be queued: %v / %v", err, qerr)
@@ -404,7 +406,7 @@ func (n *Peer) GroupList() []GroupSummary {
 	states := n.Groups.List()
 	out := make([]GroupSummary, 0, len(states))
 	for _, st := range states {
-		out = append(out, n.groupSummary(st))
+		out = append(out, n.GroupSummaryOf(st))
 	}
 	return out
 }
@@ -540,7 +542,7 @@ type GroupVoicesOptions struct {
 
 func (n *Peer) voicesMessage(gid string, voices []string, sync bool) *a2a.Message {
 	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), GID: gid, TS: time.Now(),
-		Type: a2a.TypeGroupVoices, Voices: sanitizeVoices(voices)}
+		Type: a2a.TypeGroupVoices, Voices: SanitizeVoices(voices)}
 	if sync {
 		msg.Body = GroupVoicesSyncBody
 	}
@@ -591,8 +593,10 @@ func (n *Peer) GroupAnnounceVoices(ctx context.Context, gid string, voices []str
 	return nil
 }
 
-// sanitizeVoices caps and trims an announced agent-name list (self-declared data).
-func sanitizeVoices(in []string) []string {
+// SanitizeVoices caps and trims an announced seat-agent name list (self-declared data,
+// applied on both the sending and the receiving side): at most 16 names, each non-empty,
+// at most 64 bytes and free of whitespace / "@" / "·" (the @-mention delimiters).
+func SanitizeVoices(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		v = strings.TrimSpace(v)
@@ -608,7 +612,7 @@ func sanitizeVoices(in []string) []string {
 }
 
 func (n *Peer) setGroupVoices(gid, fp string, voices []string) {
-	clean := sanitizeVoices(voices)
+	clean := SanitizeVoices(voices)
 	n.gvMu.Lock()
 	defer n.gvMu.Unlock()
 	if n.groupVoices == nil {

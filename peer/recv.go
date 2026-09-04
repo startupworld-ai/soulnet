@@ -21,7 +21,17 @@ type permanentErr struct{ err error }
 
 func (e permanentErr) Error() string { return e.err.Error() }
 func (e permanentErr) Unwrap() error { return e.err }
-func permanent(err error) error      { return permanentErr{err: err} }
+func permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return permanentErr{err: err}
+}
+
+// Permanent marks err as unprocessable mail (ack and drop; see IsPermanent). nil stays
+// nil. Hosts that run their own receive loop wrap their own poison-letter cases with it
+// so one classification covers both sides.
+func Permanent(err error) error { return permanent(err) }
 func isPermanent(err error) bool {
 	var p permanentErr
 	return errors.As(err, &p)
@@ -115,7 +125,7 @@ func (n *Peer) Run(ctx context.Context) error {
 			}
 			if isPermanent(err) {
 				n.logf(">>> mail from=%s%s REJECTED: %v", src, gidTag, err)
-				n.noteDeadLetter(it.AckID, err)
+				n.NoteDeadLetter(it.AckID, err)
 				acks = append(acks, it.AckID)
 				continue
 			}
@@ -152,7 +162,9 @@ func (n *Peer) Running() bool {
 	return n.running
 }
 
-func (n *Peer) noteDeadLetter(ackID string, err error) {
+// NoteDeadLetter logs one dropped (acked, not redelivered) letter, once per ack id: a
+// poison letter that keeps being redelivered must not flood the log.
+func (n *Peer) NoteDeadLetter(ackID string, err error) {
 	n.dlMu.Lock()
 	_, seen := n.dlSeen[ackID]
 	if !seen {
@@ -169,32 +181,49 @@ func (n *Peer) handleEnvelope(env *a2a.Envelope) error {
 	if env.GID != "" {
 		return n.handleGroupEnvelope(env) // group fan-out letter (sender-key encrypted, §14)
 	}
-	id := n.Identity()
-	xPriv, err := id.XPrivate()
+	msg, err := n.OpenEnvelope(env)
 	if err != nil {
 		return err
 	}
+	return n.dispatch(msg)
+}
+
+// OpenEnvelope decrypts one PAIRWISE envelope (Envelope.GID empty) into its inner message
+// for hosts that run their own receive loop: resolves the sender's encryption key (a
+// friend's card → the from_xpub a stranger's first contact declares → a group co-member's
+// roster card), re-verifies the outer signature and rejects an inner From that differs
+// from the signer. Errors classify with IsPermanent. Group envelopes go to
+// HandleGroupEnvelope instead.
+func (n *Peer) OpenEnvelope(env *a2a.Envelope) (*a2a.Message, error) {
+	id := n.Identity()
+	if id == nil {
+		return nil, ErrNoIdentity
+	}
+	xPriv, err := id.XPrivate()
+	if err != nil {
+		return nil, err
+	}
 	var theirXB64 string
-	if fr := n.friendByEdPub(env.From); fr != nil && fr.Card != nil {
+	if fr := n.FriendByEdPub(env.From); fr != nil && fr.Card != nil {
 		theirXB64 = fr.Card.XPub
 	} else if env.FromXPub != "" {
 		theirXB64 = env.FromXPub // first contact from a stranger (friend request) declares its encryption key in the envelope
 	} else if c := n.Groups.FindMemberCard(fingerprintOfB64(env.From)); c != nil {
 		theirXB64 = c.XPub // a group co-member who is not a friend (their card is on the roster)
 	} else {
-		return permanent(fmt.Errorf("cannot determine the sender's encryption key (not a friend and the envelope carries no xpub)"))
+		return nil, permanent(fmt.Errorf("cannot determine the sender's encryption key (not a friend and the envelope carries no xpub)"))
 	}
 	theirX, err := a2a.XPubFromB64(theirXB64)
 	if err != nil {
-		return permanent(err)
+		return nil, permanent(err)
 	}
 	// OpenFrom re-verifies the outer signature (do not trust the relay) and rejects an
 	// inner from that differs from the envelope signer (spec §13 #1).
 	msg, err := a2a.OpenFrom(env, xPriv, theirX)
 	if err != nil {
-		return permanent(err)
+		return nil, permanent(err)
 	}
-	return n.dispatch(msg)
+	return msg, nil
 }
 
 func fingerprintOfB64(edPubB64 string) string {
@@ -205,7 +234,9 @@ func fingerprintOfB64(edPubB64 string) string {
 	return a2a.Fingerprint(pub)
 }
 
-func (n *Peer) friendByEdPub(edPubB64 string) *a2a.Friend {
+// FriendByEdPub returns the friend whose Ed25519 public key (base64, as in Envelope.From)
+// matches, or nil.
+func (n *Peer) FriendByEdPub(edPubB64 string) *a2a.Friend {
 	fp := fingerprintOfB64(edPubB64)
 	if fp == "" {
 		return nil
@@ -303,7 +334,7 @@ func (n *Peer) archiveIncoming(msg *a2a.Message, kind string) error {
 	artPath := ""
 	if msg.Artifact != "" && msg.ArtifactName != "" {
 		if raw, err := base64.StdEncoding.DecodeString(msg.Artifact); err == nil {
-			artPath = n.persistArtifactBytes(peer, msg.ID, msg.ArtifactName, raw)
+			artPath = n.PersistArtifactBytes(peer, msg.ID, msg.ArtifactName, raw)
 		}
 	}
 	stored := *msg
@@ -318,9 +349,17 @@ func (n *Peer) archiveIncoming(msg *a2a.Message, kind string) error {
 
 // ——— chunk reassembly (same layout as SoulMirror: artifacts/<peer>/.incoming/<artifactID>/<i>.part) ———
 
-func (n *Peer) incomingDir(peer, artifactID string) string {
+// IncomingDir is the staging directory of one chunked transfer
+// (a2a/artifacts/<peer>/.incoming/<artifactID>/<i>.part).
+func (n *Peer) IncomingDir(peer, artifactID string) string {
 	return filepath.Join(n.Home, "a2a", "artifacts", a2a.SanitizeID(peer), ".incoming", a2a.SanitizeID(artifactID))
 }
+
+// HandleArtifactChunk consumes one artifact_chunk message from a friend for hosts that run
+// their own receive loop: stage the part, record a dedupe line, and once every part is
+// present reassemble, verify sha256, write the file and emit artifact.ready. Non-friends
+// are dropped silently; malformed chunks are permanent errors (IsPermanent).
+func (n *Peer) HandleArtifactChunk(msg *a2a.Message) error { return n.handleArtifactChunk(msg) }
 
 func (n *Peer) handleArtifactChunk(msg *a2a.Message) error {
 	peer := msg.From
@@ -344,7 +383,7 @@ func (n *Peer) handleArtifactChunk(msg *a2a.Message) error {
 	if err != nil {
 		return permanent(fmt.Errorf("chunk base64 decode failed"))
 	}
-	dir := n.incomingDir(peer, msg.ArtifactID)
+	dir := n.IncomingDir(peer, msg.ArtifactID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -355,13 +394,14 @@ func (n *Peer) handleArtifactChunk(msg *a2a.Message) error {
 	_ = n.Convs.Append(peer, &a2a.ConvEntry{Dir: "in", Message: a2a.Message{
 		ID: msg.ID, From: peer, To: msg.To, TS: msg.TS, Type: a2a.TypeArtifactChunk,
 		ArtifactID: msg.ArtifactID, ChunkIndex: msg.ChunkIndex, ChunkTotal: msg.ChunkTotal}})
-	if countParts(dir) < msg.ChunkTotal {
+	if CountParts(dir) < msg.ChunkTotal {
 		return nil
 	}
 	return n.reassemble(peer, msg.ArtifactID, msg.ArtifactName, msg.ChunkTotal, msg.ArtifactSHA)
 }
 
-func countParts(dir string) int {
+// CountParts counts the staged .part files in a chunk staging directory.
+func CountParts(dir string) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0
@@ -381,7 +421,7 @@ func countParts(dir string) int {
 // (permanent: acked — redelivering the same chunk would not change the outcome, and the
 // dedupe line prevents a re-trigger anyway; the log shows it).
 func (n *Peer) reassemble(peer, artifactID, name string, total int, wantSHA string) error {
-	dir := n.incomingDir(peer, artifactID)
+	dir := n.IncomingDir(peer, artifactID)
 	var buf []byte
 	for i := 0; i < total; i++ {
 		part, err := os.ReadFile(filepath.Join(dir, strconv.Itoa(i)+".part"))
@@ -396,7 +436,7 @@ func (n *Peer) reassemble(peer, artifactID, name string, total int, wantSHA stri
 			return permanent(fmt.Errorf("chunk reassembly sha256 check failed"))
 		}
 	}
-	p := n.persistArtifactBytes(peer, artifactID, name, buf)
+	p := n.PersistArtifactBytes(peer, artifactID, name, buf)
 	if p == "" {
 		return fmt.Errorf("write after reassembly failed")
 	}
