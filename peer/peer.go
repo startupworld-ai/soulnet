@@ -173,6 +173,16 @@ func (n *Peer) CreateIdentity(name string) (*a2a.Identity, error) {
 	return id, nil
 }
 
+// SetIdentity installs an identity the host created, reloaded or renamed through its own
+// code paths (a host that owns identity.json itself and only embeds the peer for group
+// orchestration). The peer signs, encrypts and derives its fingerprint from it from now
+// on. nil clears the identity.
+func (n *Peer) SetIdentity(id *a2a.Identity) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.id = id
+}
+
 // Fingerprint returns the local fingerprint, or "" without an identity.
 func (n *Peer) Fingerprint() string {
 	if id := n.Identity(); id != nil {

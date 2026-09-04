@@ -338,7 +338,7 @@ func TestGroupAdminInviteAndKick(t *testing.T) {
 	if err := bob.GroupKick(ctx, gid, carol.Fingerprint()); err != nil {
 		t.Fatalf("admin kick: %v", err)
 	}
-	waitUntil(t, "carol is out", func() bool { return carol.Groups.Get(gid) == nil })
+	waitUntil(t, "carol is out", func() bool { return carol.GroupLeft(gid) })
 	waitUntil(t, "alice's roster drops carol", func() bool {
 		st := alice.Groups.Get(gid)
 		return st != nil && st.Roster.Member(carol.Fingerprint()) == nil

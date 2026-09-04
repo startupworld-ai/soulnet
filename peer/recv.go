@@ -27,6 +27,12 @@ func isPermanent(err error) bool {
 	return errors.As(err, &p)
 }
 
+// IsPermanent reports whether err marks mail that is broken beyond retry (the receive
+// loop acks and drops it) as opposed to a transient failure (left on the relay, retried
+// next round). Hosts that run their own receive loop and hand group mail to
+// HandleGroupEnvelope / HandleGroupMessage use it to decide whether to ack.
+func IsPermanent(err error) bool { return isPermanent(err) }
+
 // shortAck truncates an ack id (the inbox file name) for readable log lines.
 func shortAck(ack string) string {
 	if len(ack) > 16 {
@@ -229,19 +235,10 @@ func (n *Peer) dispatch(msg *a2a.Message) error {
 		return n.archiveIncoming(msg, EventMissionUpdate)
 	case a2a.TypeArtifactChunk:
 		return n.handleArtifactChunk(msg)
-	case a2a.TypeGroupInvite:
-		return n.handleGroupInvite(msg)
-	case a2a.TypeGroupKey:
-		return n.handleGroupKey(msg)
-	case a2a.TypeGroupLeave:
-		return n.handleGroupLeave(msg)
-	case a2a.TypeGroupUpdate:
-		return n.handleGroupUpdatePairwise(msg)
-	case a2a.TypeGroupJoin:
-		return n.handleGroupJoin(msg)
-	case a2a.TypeGroupAdmin:
-		return n.handleGroupAdmin(msg)
 	default:
+		if handled, err := n.HandleGroupMessage(msg); handled {
+			return err
+		}
 		n.logf("unknown message type %q (ignored)", msg.Type)
 		return nil
 	}

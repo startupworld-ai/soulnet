@@ -2,6 +2,22 @@
 // invite, distribute and consume sender keys, send/receive fan-out mail, and rekey on
 // member removal. All state lives in a2a.GroupStore (<home>/a2a/groups/<gid>/); the
 // conversation archive shares ConvStore under the key a2a.GroupConvKey(gid).
+//
+// Membership transitions and sender-key epochs (the part that is easy to get subtly
+// wrong; every rule below has a test in group_rejoin_test.go):
+//
+//   - A key distribution carries the chain AT the sender's current index, and the
+//     receiver stores it at that index - a late joiner gets a ratcheted chain, not the
+//     epoch's origin.
+//   - Removing members rotates my sender key to the next epoch AND forgets the receive
+//     state of everyone no longer on the roster (a returning member may start over).
+//   - Being removed keeps the group on disk read-only (left.json; GroupLeft) - history
+//     is the user's data, and my old epoch on file is what makes a re-admission rotate
+//     PAST it instead of colliding with what the others still remember.
+//   - A same-epoch distribution with different material replaces what I hold: the
+//     sender restarted, and only it decides whether its chain decrypts.
+//   - An invite for a group I already hold makes me redistribute my key to everyone
+//     (I may have been removed and re-added while offline).
 package peer
 
 import (
@@ -13,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +41,11 @@ var ErrNoGroup = fmt.Errorf("unknown group")
 
 // ErrGroupOwner: the operation is reserved for (or forbidden to) the group owner.
 var ErrGroupOwner = fmt.Errorf("group owner operation not allowed")
+
+// ErrGroupLeft: the owner removed me from this group. The group and its archive stay on
+// this node read-only (see GroupLeft); sending and every fan-out are refused until the
+// owner re-admits me.
+var ErrGroupLeft = fmt.Errorf("no longer a member of this group")
 
 // ErrPaidProofUsed: the applicant's payment tx has already been consumed by
 // another admission — one on-chain payment admits exactly one member.
@@ -44,6 +66,9 @@ type GroupSummary struct {
 	// Profile is the governance profile off the roster (nil on pre-profile groups), so
 	// list rows can gate composers without fetching every group.
 	Profile *a2a.GroupProfile `json:"profile,omitempty"`
+	// Left: the owner removed me. The group is kept read-only on this node (history
+	// intact, no sending, no new mail); it flips back when the owner re-admits me.
+	Left bool `json:"left,omitempty"`
 }
 
 // GroupMemberView is one member row (fp + display name off the roster card).
@@ -82,7 +107,8 @@ func (n *Peer) groupSummary(st *a2a.GroupState) GroupSummary {
 	count, last, unread := n.Convs.Summary(a2a.GroupConvKey(gid), st.LastReadAt)
 	s := GroupSummary{GID: gid, Name: st.Roster.Name, OwnerFp: st.Roster.OwnerFp(),
 		Mine: st.Roster.OwnerFp() == n.Fingerprint(), Version: st.Roster.Version,
-		Members: len(st.Roster.Members), Unread: unread, Count: count, Profile: st.Roster.Profile}
+		Members: len(st.Roster.Members), Unread: unread, Count: count, Profile: st.Roster.Profile,
+		Left: n.GroupLeft(gid)}
 	if last != nil {
 		s.LastTs = last.TS.UnixMilli()
 		s.LastBody = last.Body
@@ -214,10 +240,19 @@ func (n *Peer) ensureSenderKey(gid string) error {
 	return n.Groups.PutKeys(gid, keys)
 }
 
-// rekeyGroup replaces MY sender key with a fresh chain at the next epoch (called when
-// members were removed: they keep the old chain, so a new one shuts them out) and
-// redistributes it to the current members.
-func (n *Peer) rekeyGroup(ctx context.Context, st *a2a.GroupState) {
+// rekeyGroup replaces MY sender key with a fresh chain at the next epoch and
+// redistributes it to the current members. Called when members were removed (they keep
+// the old chain, so a new one shuts them out) and when the owner re-admits me (a member
+// that still holds my old receive state would take a same-epoch chain for a replay; a
+// higher epoch is accepted by everyone).
+//
+// It also forgets the receive state and distribution record of everyone who is no longer
+// on the roster. A removed member that comes back may restart its chain at epoch 1 /
+// index 0 (older peers wipe the group when kicked); with its previous {epoch 1, index k}
+// still on file, handleGroupKey would treat the new chain as a replay and every message
+// from it would fail with "index 0 already consumed". State for non-members has no
+// value worth keeping.
+func (n *Peer) rekeyGroup(ctx context.Context, st *a2a.GroupState, why string) {
 	gid := st.Roster.GroupID
 	n.gkMu.Lock()
 	keys := n.Groups.Keys(gid)
@@ -233,13 +268,51 @@ func (n *Peer) rekeyGroup(ctx context.Context, st *a2a.GroupState) {
 	}
 	keys.Mine = fresh
 	keys.DistributedTo = map[string]int{}
+	pruneGroupKeysToRoster(keys, st.Roster)
 	err = n.Groups.PutKeys(gid, keys)
 	n.gkMu.Unlock()
 	if err != nil {
 		n.logf("group %s: persisting rekey: %v", a2a.ShortFp(gid), err)
 		return
 	}
-	n.logf("group %s: sender key rotated to epoch %d (member removal)", a2a.ShortFp(gid), epoch)
+	n.logf("group %s: sender key rotated to epoch %d (%s)", a2a.ShortFp(gid), epoch, why)
+	n.distributeSenderKey(ctx, st)
+}
+
+// pruneGroupKeysToRoster drops receive states and distribution records of fingerprints
+// that are not on the roster (caller holds gkMu).
+func pruneGroupKeysToRoster(keys *a2a.GroupKeys, roster *a2a.GroupRoster) {
+	for fp := range keys.Senders {
+		if roster.Member(fp) == nil {
+			delete(keys.Senders, fp)
+		}
+	}
+	for fp := range keys.DistributedTo {
+		if roster.Member(fp) == nil {
+			delete(keys.DistributedTo, fp)
+		}
+	}
+}
+
+// redistributeSenderKey hands my CURRENT chain to every co-member again, ignoring the
+// distribution record. Used when an invite arrives for a group I already hold: the owner
+// is (re)admitting me, and I may have been removed and re-added while offline - no
+// roster diff ever told me, but the others forgot my key when they rekeyed.
+func (n *Peer) redistributeSenderKey(ctx context.Context, st *a2a.GroupState) {
+	gid := st.Roster.GroupID
+	n.gkMu.Lock()
+	keys := n.Groups.Keys(gid)
+	if keys.Mine == nil {
+		n.gkMu.Unlock()
+		return
+	}
+	keys.DistributedTo = map[string]int{}
+	err := n.Groups.PutKeys(gid, keys)
+	n.gkMu.Unlock()
+	if err != nil {
+		n.logf("group %s: resetting key distribution: %v", a2a.ShortFp(gid), err)
+		return
+	}
 	n.distributeSenderKey(ctx, st)
 }
 
@@ -322,7 +395,7 @@ func (n *Peer) GroupCreate(ctx context.Context, name string, memberFps []string,
 		}
 	}
 	n.distributeSenderKey(ctx, st)
-	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonCreated})
 	return n.groupView(st), nil
 }
 
@@ -350,6 +423,9 @@ func (n *Peer) GroupInfo(gid string) (*GroupView, error) {
 // chain is persisted BEFORE delivering (a chain position must never be reused).
 func (n *Peer) fanOutGroup(ctx context.Context, st *a2a.GroupState, msg *a2a.Message) error {
 	gid := st.Roster.GroupID
+	if n.GroupLeft(gid) {
+		return ErrGroupLeft // read-only: nothing goes out (the relay would refuse it anyway)
+	}
 	if err := n.ensureSenderKey(gid); err != nil {
 		return err
 	}
@@ -399,6 +475,9 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 	if body == "" {
 		return nil, fmt.Errorf("%w: body must not be empty", ErrBadFile)
 	}
+	if n.GroupLeft(gid) {
+		return nil, ErrGroupLeft
+	}
 	me := n.Fingerprint()
 	if err := st.Roster.AllowSpeak(me, opts.By); err != nil {
 		return nil, err
@@ -445,6 +524,44 @@ func (n *Peer) GroupTyping(ctx context.Context, gid string, on bool, agent strin
 	return nil
 }
 
+// GroupVoicesSyncBody is the Body of a voices announcement that also asks every member to
+// re-announce theirs ("this is my list - please replay yours"; a fresh node holds nobody's
+// list). Peers that predate it read only Voices and consume the message as a plain
+// announcement, which is semantically correct - the wire format is unchanged.
+const GroupVoicesSyncBody = "sync"
+
+// GroupVoicesOptions are the optional parts of one voices announcement.
+type GroupVoicesOptions struct {
+	// Sync also asks every member to re-announce their own seat names
+	// (Body = GroupVoicesSyncBody). Receivers report it as group.updated / voices with
+	// the announcement in Message; whether to answer is the host's call.
+	Sync bool
+}
+
+func (n *Peer) voicesMessage(gid string, voices []string, sync bool) *a2a.Message {
+	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), GID: gid, TS: time.Now(),
+		Type: a2a.TypeGroupVoices, Voices: sanitizeVoices(voices)}
+	if sync {
+		msg.Body = GroupVoicesSyncBody
+	}
+	return msg
+}
+
+// GroupAnnounceVoicesWith is GroupAnnounceVoices with options and WITHOUT the built-in
+// delayed retry: the delivery error is returned as is, for hosts that run their own
+// self-healing schedule (replay on start, answer sync requests, periodic top-up) and
+// want to throttle and retry themselves.
+func (n *Peer) GroupAnnounceVoicesWith(ctx context.Context, gid string, voices []string, opts GroupVoicesOptions) error {
+	if !n.HasIdentity() {
+		return ErrNoIdentity
+	}
+	st := n.Groups.Get(gid)
+	if st == nil {
+		return ErrNoGroup
+	}
+	return n.fanOutGroup(ctxOrBackground(ctx), st, n.voicesMessage(gid, voices, opts.Sync))
+}
+
 // GroupAnnounceVoices fans out this seat's enabled agent names in one group
 // (TypeGroupVoices): metadata for the other members' @-autocomplete, not speech
 // (AllowSpeak does not apply) and never archived. An empty list clears the entry.
@@ -456,8 +573,7 @@ func (n *Peer) GroupAnnounceVoices(ctx context.Context, gid string, voices []str
 	if st == nil {
 		return ErrNoGroup
 	}
-	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), GID: gid, TS: time.Now(),
-		Type: a2a.TypeGroupVoices, Voices: sanitizeVoices(voices)}
+	msg := n.voicesMessage(gid, voices, false)
 	if err := n.fanOutGroup(ctxOrBackground(ctx), st, msg); err != nil {
 		// Startup announces hit the relay in a burst and an occasional post
 		// times out; the roster metadata must still converge - one delayed
@@ -553,7 +669,9 @@ func (n *Peer) GroupLeave(ctx context.Context, gid string) error {
 	if st.Roster.OwnerFp() == me {
 		return fmt.Errorf("%w: the owner cannot leave its own group", ErrGroupOwner)
 	}
-	if ownerCard := st.Roster.Member(st.Roster.OwnerFp()); ownerCard != nil {
+	if ownerCard := st.Roster.Member(st.Roster.OwnerFp()); ownerCard != nil && !n.GroupLeft(gid) {
+		// Already removed by the owner = the user deleting the read-only record; nothing
+		// to tell the owner then.
 		leave := &a2a.Message{ID: n.newMsgID(), From: me, To: st.Roster.OwnerFp(), TS: time.Now(),
 			Type: a2a.TypeGroupLeave, GID: gid}
 		if err := n.sendGroupPairwise(ctxOrBackground(ctx), ownerCard, leave); err != nil {
@@ -563,7 +681,7 @@ func (n *Peer) GroupLeave(ctx context.Context, gid string) error {
 	if err := n.Groups.Remove(gid); err != nil {
 		return err
 	}
-	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonLeft})
 	return nil
 }
 
@@ -677,7 +795,7 @@ func (n *Peer) republishRoster(ctx context.Context, st *a2a.GroupState, drop []s
 		return err
 	}
 	if len(droppedCards) > 0 {
-		n.rekeyGroup(ctx, st)
+		n.rekeyGroup(ctx, st, "member removal")
 	}
 	for _, c := range addedCards {
 		fp, _ := c.Fingerprint()
@@ -693,16 +811,26 @@ func (n *Peer) republishRoster(ctx context.Context, st *a2a.GroupState, drop []s
 	}
 	n.groupNotifyUpdate(ctx, st, "roster updated")
 	// The fan-out above follows the NEW roster and cannot reach removed members — tell
-	// them pairwise so their node refetches, hits 403 and forgets the group.
+	// them pairwise so their node refetches, hits 403 and marks the group read-only.
+	var removedFps []string
 	for _, c := range droppedCards {
 		fp, _ := c.Fingerprint()
+		removedFps = append(removedFps, fp)
 		bye := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), To: fp, TS: time.Now(),
 			Type: a2a.TypeGroupUpdate, GID: next.GroupID}
 		if err := n.sendGroupPairwise(ctx, c, bye); err != nil {
 			n.logf("group %s: removal notice to %s failed: %v", a2a.ShortFp(next.GroupID), a2a.ShortFp(fp), err)
 		}
 	}
-	n.emit(Event{Kind: EventGroupUpdated, GID: next.GroupID, TS: time.Now()})
+	var addedFps []string
+	for _, c := range addedCards {
+		fp, _ := c.Fingerprint()
+		addedFps = append(addedFps, fp)
+	}
+	sort.Strings(addedFps)
+	sort.Strings(removedFps)
+	n.emit(Event{Kind: EventGroupUpdated, GID: next.GroupID, TS: time.Now(), Reason: GroupReasonRoster,
+		Added: addedFps, Removed: removedFps})
 	return nil
 }
 
@@ -738,7 +866,7 @@ func relayForbidden(err error) bool {
 
 // refreshRoster refetches the roster from the group relay and applies it: version must
 // increase and the owner must be unchanged. Removals trigger a rekey; my own removal
-// forgets the group.
+// keeps the group read-only (see GroupLeft).
 func (n *Peer) refreshRoster(ctx context.Context, gid string) {
 	st := n.Groups.Get(gid)
 	if st == nil {
@@ -747,62 +875,137 @@ func (n *Peer) refreshRoster(ctx context.Context, gid string) {
 	fetched, err := n.groupRelayClient(st.Roster.Relay).FetchGroup(ctx, gid)
 	if err != nil {
 		n.logf("group %s: roster refresh failed: %v", a2a.ShortFp(gid), err)
-		if relayForbidden(err) {
+		if relayForbidden(err) && !n.GroupLeft(gid) {
 			// The relay no longer counts us as a member: we were removed.
-			_ = n.Groups.Remove(gid)
-			n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+			n.logf("group %s: I was removed (relay 403); keeping the group read-only (archive kept)", a2a.ShortFp(gid))
+			n.markGroupLeft(gid, "removed")
+			n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonRemoved})
 		}
 		return
 	}
 	n.applyRoster(ctx, st, fetched)
 }
 
-// applyRoster validates and stores a newer roster version (from a fetch or an invite).
-func (n *Peer) applyRoster(ctx context.Context, st *a2a.GroupState, next *a2a.GroupRoster) {
+// applyRoster validates and stores a newer roster version (from a fetch or an invite)
+// and converges my key material to it. Returns whether the roster was applied.
+func (n *Peer) applyRoster(ctx context.Context, st *a2a.GroupState, next *a2a.GroupRoster) bool {
 	gid := st.Roster.GroupID
 	if next.GroupID != gid || next.Verify() != nil || next.OwnerPub != st.Roster.OwnerPub {
 		n.logf("group %s: rejected a roster update (id/owner/signature mismatch)", a2a.ShortFp(gid))
-		return
+		return false
 	}
 	if next.Version <= st.Roster.Version {
-		return
+		return false
 	}
 	me := n.Fingerprint()
 	if next.Member(me) == nil {
-		n.logf("group %s: I was removed; forgetting the group (archive kept)", a2a.ShortFp(gid))
-		_ = n.Groups.Remove(gid)
-		n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
-		return
+		// I was removed. The group and its archive stay on disk read-only: the newest
+		// roster is still the truth about who is in, and keeping keys.json (my sender-key
+		// epoch) is what lets a later re-admission rotate PAST it instead of restarting at
+		// epoch 1 - which a member that still remembers me would take for a replay.
+		st.Roster = next
+		if err := n.Groups.Put(st); err != nil {
+			n.logf("group %s: storing roster update: %v", a2a.ShortFp(gid), err)
+		}
+		if !n.GroupLeft(gid) {
+			n.logf("group %s: I was removed; keeping the group read-only (archive kept)", a2a.ShortFp(gid))
+			n.markGroupLeft(gid, "removed")
+		}
+		n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonRemoved})
+		return true
+	}
+	if n.GroupLeft(gid) {
+		// Re-admitted: the same conversation continues. My sender key must move to a NEW
+		// epoch and go out to everyone - a member that still holds my old receive state
+		// would take a same-epoch chain for a replay, one that forgot me accepts any
+		// epoch; a higher epoch covers both. The diff against the roster I held while
+		// out is meaningless, so the add/remove bookkeeping below is skipped.
+		st.Roster = next
+		st.JoinedAt = time.Now()
+		if err := n.Groups.Put(st); err != nil {
+			n.logf("group %s: storing roster update: %v", a2a.ShortFp(gid), err)
+			return false
+		}
+		n.clearGroupLeft(gid)
+		n.rekeyGroup(ctx, st, "re-admitted")
+		n.logf("re-joined group %q (%s), %d members (same conversation)", next.Name, a2a.ShortFp(gid), len(next.Members))
+		n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonRejoined})
+		n.flushInviteIntents(ctx, st)
+		return true
 	}
 	oldFps := map[string]bool{}
 	for _, fp := range st.Roster.MemberFps() {
 		oldFps[fp] = true
 	}
-	removed := false
 	newFps := map[string]bool{}
+	var added, removed []string
 	for _, fp := range next.MemberFps() {
 		newFps[fp] = true
+		if !oldFps[fp] {
+			added = append(added, fp)
+		}
 	}
-	for fp := range oldFps {
+	for _, fp := range st.Roster.MemberFps() {
 		if !newFps[fp] {
-			removed = true
-			break
+			removed = append(removed, fp)
 		}
 	}
 	st.Roster = next
 	if err := n.Groups.Put(st); err != nil {
 		n.logf("group %s: storing roster update: %v", a2a.ShortFp(gid), err)
-		return
+		return false
 	}
-	if removed {
-		n.rekeyGroup(ctx, st)
+	if len(removed) > 0 {
+		n.rekeyGroup(ctx, st, "member removal")
 	} else {
 		// New members may have joined: top up my key to them.
 		n.distributeSenderKey(ctx, st)
 	}
-	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonRoster,
+		Added: added, Removed: removed})
 	n.flushInviteIntents(ctx, st)
+	return true
 }
+
+// ——— "removed from this group" marker (groups/<gid>/left.json) ———
+//
+// Being kicked must not wipe the group: the conversation is the user's data, and keeping
+// keys.json is exactly what lets a later re-admission rotate my sender key past the old
+// epoch (see applyRoster). The marker is local only - never on the wire, never in the
+// roster. A voluntary GroupLeave still removes the whole directory: that is the user's
+// own choice; a removal is someone else's action and must not lose their data.
+
+type groupLeftMark struct {
+	TS     time.Time `json:"ts"`
+	Reason string    `json:"reason,omitempty"` // "removed"
+}
+
+func (n *Peer) leftPath(gid string) string {
+	return filepath.Join(n.Home, "a2a", "groups", a2a.SanitizeID(gid), "left.json")
+}
+
+// GroupLeft reports whether the owner removed me from gid while I still hold the group
+// locally (read-only: history intact, GroupSend refused, no new mail). Cleared when the
+// owner re-admits me.
+func (n *Peer) GroupLeft(gid string) bool {
+	_, err := os.Stat(n.leftPath(gid))
+	return err == nil
+}
+
+// markGroupLeft writes the marker (idempotent; a group directory that does not exist is
+// not created for it).
+func (n *Peer) markGroupLeft(gid, reason string) {
+	path := n.leftPath(gid)
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		return
+	}
+	raw, _ := json.Marshal(groupLeftMark{TS: time.Now(), Reason: reason})
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		n.logf("group %s: persisting the removed marker: %v", a2a.ShortFp(gid), err)
+	}
+}
+
+func (n *Peer) clearGroupLeft(gid string) { _ = os.Remove(n.leftPath(gid)) }
 
 // ——— receive side ———
 
@@ -843,6 +1046,12 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		// The invite may still be in flight (fan-out can outrun the pairwise invite).
 		n.logf("[grp-debug] envelope gid=%s sender=%s NOT-JOINED (transient retry)", a2a.ShortFp(gid), a2a.ShortFp(senderFp))
 		return n.transientOrDrop("grp-env-"+gid, fmt.Errorf("group %s not joined yet", a2a.ShortFp(gid)))
+	}
+	if n.GroupLeft(gid) {
+		// A removed member gets no fan-out from the relay; one that arrives anyway most
+		// likely means "just re-admitted, the invite is still in flight" - wait for it
+		// like the not-joined case (the retry budget bounds a genuine stray).
+		return n.transientOrDrop("grp-env-"+gid, fmt.Errorf("group %s: not a member any more (waiting for a possible re-admission)", a2a.ShortFp(gid)))
 	}
 	if st.Roster.Member(senderFp) == nil {
 		// Maybe my roster is stale; refresh once per budget round, else drop.
@@ -911,7 +1120,7 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		// Not speech (AllowSpeak does not apply), never archived; the update event
 		// makes clients refetch the member list.
 		n.setGroupVoices(gid, senderFp, msg.Voices)
-		n.emit(Event{Kind: EventGroupUpdated, GID: gid, Peer: senderFp, TS: time.Now()})
+		n.emit(Event{Kind: EventGroupUpdated, GID: gid, Peer: senderFp, TS: time.Now(), Reason: GroupReasonVoices, Message: msg})
 		return nil
 	case a2a.TypeText:
 		// Receiver-side governance: never trust the sender's own check.
@@ -958,12 +1167,18 @@ func (n *Peer) handleGroupInvite(msg *a2a.Message) error {
 		return permanent(fmt.Errorf("invite sender is neither the roster owner nor an admin"))
 	}
 	// Trust rule: strangers cannot drag me into groups. The inviter must be MY FRIEND —
-	// or I applied to exactly this group (the owner of an apply/open group is usually a
-	// stranger; my own application whitelists its invite).
-	if !n.Friends.IsFriend(msg.From) && !n.hasApplied(roster.GroupID) {
-		n.logf("[grp-debug] invite DROPPED gid=%s from=%s (not friend & not applied)", a2a.ShortFp(roster.GroupID), a2a.ShortFp(msg.From))
-		n.logf("dropping group invite from non-friend %s", a2a.ShortFp(msg.From))
-		return nil
+	// or I applied to exactly this group AND the inviter is the owner I applied to. The
+	// group id is a public random value not bound to the owner key: whitelisting by gid
+	// alone would let a third party self-sign a roster with the same gid and a different
+	// owner, drag me into a fake group while my application is pending and collect my
+	// sender key. A marker written before the owner was recorded whitelists by gid only
+	// (until it expires).
+	if !n.Friends.IsFriend(msg.From) {
+		owner, applied := n.appliedOwner(roster.GroupID)
+		if !applied || (owner != "" && owner != msg.From) {
+			n.logf("dropping group invite from %s: neither a friend nor the owner I applied to", a2a.ShortFp(msg.From))
+			return nil
+		}
 	}
 	me := n.Fingerprint()
 	if roster.Member(me) == nil {
@@ -972,7 +1187,18 @@ func (n *Peer) handleGroupInvite(msg *a2a.Message) error {
 	ctx := context.Background()
 	if existing := n.Groups.Get(roster.GroupID); existing != nil {
 		n.clearApplied(roster.GroupID)
+		wasLeft := n.GroupLeft(roster.GroupID)
 		n.applyRoster(ctx, existing, roster)
+		if !wasLeft && !n.GroupLeft(roster.GroupID) {
+			// An invite for a group I already hold means the owner is (re)admitting me -
+			// e.g. I was removed and re-added while offline, so no roster diff ever told
+			// me, yet the others forgot my key when they rekeyed. Hand my current chain to
+			// everyone again; a receiver that still holds it takes it as stated. (A
+			// re-admission after a marked removal already rotated and redistributed.)
+			if st := n.Groups.Get(roster.GroupID); st != nil {
+				n.redistributeSenderKey(ctx, st)
+			}
+		}
 		return nil
 	}
 	st := &a2a.GroupState{Roster: roster, JoinedAt: time.Now(), LastReadAt: time.Now()}
@@ -985,17 +1211,18 @@ func (n *Peer) handleGroupInvite(msg *a2a.Message) error {
 	n.distributeSenderKey(ctx, st)
 	n.clearApplied(roster.GroupID)
 	n.logf("joined group %q (%s), %d members", roster.Name, a2a.ShortFp(roster.GroupID), len(roster.Members))
-	n.emit(Event{Kind: EventGroupUpdated, GID: roster.GroupID, TS: time.Now()})
+	n.emit(Event{Kind: EventGroupUpdated, GID: roster.GroupID, Peer: msg.From, TS: time.Now(), Reason: GroupReasonJoined})
 	return nil
 }
 
-// handleGroupKey (pairwise): a co-member sent me their chain key for one group.
+// handleGroupKey (pairwise): a co-member sent me their chain key for one group. The
+// chain is stored AT the position the sender declares (GroupKeyDist.Index), never at 0.
 func (n *Peer) handleGroupKey(msg *a2a.Message) error {
 	if msg.GKey == nil || !a2a.ValidGroupID(msg.GID) {
 		return permanent(fmt.Errorf("malformed group_key"))
 	}
 	chain, err := a2a.DecodeKey(msg.GKey.Chain)
-	if err != nil || len(chain) != 32 || msg.GKey.Epoch < 1 {
+	if err != nil || len(chain) != 32 || msg.GKey.Epoch < 1 || msg.GKey.Index < 0 {
 		return permanent(fmt.Errorf("malformed group_key material"))
 	}
 	st := n.Groups.Get(msg.GID)
@@ -1004,16 +1231,61 @@ func (n *Peer) handleGroupKey(msg *a2a.Message) error {
 			fmt.Errorf("group_key for a group not joined yet (%s)", a2a.ShortFp(msg.GID)))
 	}
 	if st.Roster.Member(msg.From) == nil {
-		return permanent(fmt.Errorf("group_key from a non-member"))
+		// A new member distributes its key the moment the invite lands, which can outrun
+		// the owner's group_update to me: refetch the roster once, then wait (transient)
+		// instead of dropping. A genuine non-member exhausts the retry budget.
+		n.refreshRoster(context.Background(), msg.GID)
+		if st = n.Groups.Get(msg.GID); st == nil || st.Roster.Member(msg.From) == nil {
+			return n.transientOrDrop("grp-gk-member-"+msg.GID+msg.From,
+				fmt.Errorf("group_key from non-member %s (roster may still be in flight)", a2a.ShortFp(msg.From)))
+		}
 	}
 	n.gkMu.Lock()
 	defer n.gkMu.Unlock()
 	keys := n.Groups.Keys(msg.GID)
-	if existing := keys.Senders[msg.From]; existing != nil && msg.GKey.Epoch <= existing.Epoch {
-		return nil // replay or duplicate of what we hold
+	if existing := keys.Senders[msg.From]; existing != nil {
+		if msg.GKey.Epoch < existing.Epoch {
+			return nil // superseded by a higher epoch we already hold
+		}
+		if msg.GKey.Epoch == existing.Epoch && existing.Index == msg.GKey.Index && existing.Chain == msg.GKey.Chain {
+			return nil // byte-identical redelivery
+		}
+		// Same epoch, different material: the sender restarted its chain at this epoch
+		// (an older peer that wiped the group when kicked and came back at epoch 1) or
+		// re-sent its current position. The distribution is pairwise-encrypted by the
+		// sender itself and only decides whether ITS chain decrypts: take it as stated.
+		// Moving back to an earlier index merely caches the skipped message keys.
 	}
 	keys.Senders[msg.From] = &a2a.GroupRecvState{Epoch: msg.GKey.Epoch, Index: msg.GKey.Index, Chain: msg.GKey.Chain}
 	return n.Groups.PutKeys(msg.GID, keys)
+}
+
+// HandleGroupEnvelope processes one group fan-out envelope (Envelope.GID set) for hosts
+// that run their own receive loop instead of Run: signature + membership check, decrypt
+// with the sender's chain, dedupe, archive, emit. Classify a non-nil error with
+// IsPermanent (ack and drop) versus transient (leave on the relay, retry later).
+func (n *Peer) HandleGroupEnvelope(env *a2a.Envelope) error { return n.handleGroupEnvelope(env) }
+
+// HandleGroupMessage dispatches one already-decrypted pairwise group control message
+// (group_invite / group_key / group_leave / group_update / group_join / group_admin) for
+// hosts that run their own receive loop. handled=false means msg is not a group control
+// message and the host keeps it; err classifies with IsPermanent.
+func (n *Peer) HandleGroupMessage(msg *a2a.Message) (handled bool, err error) {
+	switch msg.Type {
+	case a2a.TypeGroupInvite:
+		return true, n.handleGroupInvite(msg)
+	case a2a.TypeGroupKey:
+		return true, n.handleGroupKey(msg)
+	case a2a.TypeGroupLeave:
+		return true, n.handleGroupLeave(msg)
+	case a2a.TypeGroupUpdate:
+		return true, n.handleGroupUpdatePairwise(msg)
+	case a2a.TypeGroupJoin:
+		return true, n.handleGroupJoin(msg)
+	case a2a.TypeGroupAdmin:
+		return true, n.handleGroupAdmin(msg)
+	}
+	return false, nil
 }
 
 // handleGroupLeave (pairwise, owner side): a member asked out — shrink the roster.
@@ -1088,7 +1360,7 @@ func (n *Peer) GroupPin(ctx context.Context, gid, body string) (*a2a.GroupPin, e
 	if err := n.Groups.AddPin(gid, pin); err != nil {
 		return nil, err
 	}
-	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonPins})
 	return &pin, nil
 }
 
@@ -1117,7 +1389,7 @@ func (n *Peer) GroupUnpin(ctx context.Context, gid, pinID string) error {
 	if err := n.Groups.RemovePin(gid, pinID); err != nil {
 		return err
 	}
-	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonPins})
 	return nil
 }
 
@@ -1157,7 +1429,7 @@ func (n *Peer) applyGroupPin(st *a2a.GroupState, senderFp string, msg *a2a.Messa
 		}
 	}
 	if changed {
-		n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now()})
+		n.emit(Event{Kind: EventGroupUpdated, GID: gid, Peer: senderFp, TS: time.Now(), Reason: GroupReasonPins})
 	}
 	return nil
 }
@@ -1213,7 +1485,7 @@ func (n *Peer) GroupApply(ctx context.Context, groupURI, note string, payment *a
 	}
 	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), To: ownerFp, TS: time.Now(),
 		Type: a2a.TypeGroupJoin, GID: gid, Body: strings.TrimSpace(note), Card: myCard, Payment: payment}
-	n.markApplied(gid) // whitelist the invite that the (stranger) owner answers with
+	n.markApplied(gid, ownerFp) // whitelist the invite THIS owner answers with (see handleGroupInvite)
 	if err := n.sendGroupPairwise(ctx, card.OwnerCard, msg); err != nil {
 		return "", err
 	}
@@ -1449,26 +1721,58 @@ func (n *Peer) handleGroupAdmin(msg *a2a.Message) error {
 // ——— small persisted markers (applicant side + admin side) ———
 
 // appliedPath marks "I applied to this group": the marker whitelists the group invite
-// that will come back from the owner — a stranger — so it is not dropped.
+// that will come back from the owner — a stranger — so it is not dropped. It records the
+// owner I applied to (the whitelist is bound to that owner, see handleGroupInvite) and
+// expires: an application that is never answered must not become a standing "accept any
+// invite for this gid".
 func (n *Peer) appliedPath(gid string) string {
 	return filepath.Join(n.Home, "a2a", "groups", a2a.SanitizeID(gid), "applied.json")
 }
 
-func (n *Peer) markApplied(gid string) {
+// appliedTTL bounds how long a pending application whitelists the owner's invite.
+const appliedTTL = 30 * 24 * time.Hour
+
+type appliedMark struct {
+	Owner string    `json:"owner,omitempty"` // fingerprint of the owner I applied to ("" on markers written before it was recorded)
+	TS    time.Time `json:"ts"`
+}
+
+func (n *Peer) markApplied(gid, ownerFp string) {
 	path := n.appliedPath(gid)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		n.logf("group %s: persisting application marker: %v", a2a.ShortFp(gid), err)
 		return
 	}
-	raw, _ := json.Marshal(map[string]any{"ts": time.Now()})
+	raw, _ := json.Marshal(appliedMark{Owner: ownerFp, TS: time.Now()})
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		n.logf("group %s: persisting application marker: %v", a2a.ShortFp(gid), err)
 	}
 }
 
-func (n *Peer) hasApplied(gid string) bool {
-	_, err := os.Stat(n.appliedPath(gid))
-	return err == nil
+// appliedOwner returns the owner recorded with my pending application to gid ("" for a
+// marker that predates the owner field) and whether a live marker exists. Expired
+// markers are removed.
+func (n *Peer) appliedOwner(gid string) (string, bool) {
+	raw, err := os.ReadFile(n.appliedPath(gid))
+	if err != nil {
+		return "", false
+	}
+	var m appliedMark
+	if json.Unmarshal(raw, &m) != nil {
+		return "", false
+	}
+	if !m.TS.IsZero() && time.Since(m.TS) > appliedTTL {
+		n.clearApplied(gid)
+		return "", false
+	}
+	return m.Owner, true
+}
+
+// GroupApplied reports whether I applied to gid and the application is still pending
+// (no invite has come back yet). Hosts render "applied, waiting for the owner" from it.
+func (n *Peer) GroupApplied(gid string) bool {
+	_, ok := n.appliedOwner(gid)
+	return ok
 }
 
 func (n *Peer) clearApplied(gid string) { _ = os.Remove(n.appliedPath(gid)) }

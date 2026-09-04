@@ -112,11 +112,15 @@ func TestGroupCreateChatKickLeave(t *testing.T) {
 		t.Fatalf("unread after markRead: %d", s[0].Unread)
 	}
 
-	// Kick carol: her node forgets the group; the survivors rekey and keep chatting.
+	// Kick carol: her node keeps the group read-only (history intact, marked as removed);
+	// the survivors rekey and keep chatting.
 	if err := alice.GroupKick(ctx, gid, carol.Fingerprint()); err != nil {
 		t.Fatalf("GroupKick: %v", err)
 	}
-	waitUntil(t, "carol forgot the group", func() bool { return carol.Groups.Get(gid) == nil })
+	waitUntil(t, "carol is marked as removed", func() bool { return carol.GroupLeft(gid) })
+	if carol.Groups.Get(gid) == nil {
+		t.Fatal("a removed member must keep the group locally (read-only)")
+	}
 	waitUntil(t, "bob sees roster v2", func() bool {
 		st := bob.Groups.Get(gid)
 		return st != nil && st.Roster.Version == 2 && st.Roster.Member(carol.Fingerprint()) == nil

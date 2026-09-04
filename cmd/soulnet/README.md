@@ -63,12 +63,12 @@ The `initialize` result carries the `methods` / `notifications` lists for capabi
 | `profile.get` | — | `{profile\|null, published}` | The local capability profile |
 | `profile.save` | `{profile}` | `{profile}` | Save (fills fingerprint/time/signature), does **not** publish |
 | `group.create` | `{name, members[], profile?}` | `{group}` | Create a group (me = owner) with the given **friend** fingerprints; publishes the signed roster on my relay and invites every member (wire spec §14). `profile` = a `GroupProfile` JSON (governance switches + free-text rules, signed into the roster); omitted → the "standard" default. `group` = the view below plus `member_list[] = {fp, name}`, `pins[]`, `my_role` (`owner`/`admin`/`member`) and, on the owner's node, `applications[]` |
-| `group.list` | — | `{groups[]}` | `groups[i] = {gid, name, owner_fp, mine, version, members, unread, count, last_ts?, last_body?, profile?}` (`profile` lets UIs gate composers without fetching each group) |
+| `group.list` | — | `{groups[]}` | `groups[i] = {gid, name, owner_fp, mine, version, members, unread, count, last_ts?, last_body?, profile?, left?}` (`profile` lets UIs gate composers without fetching each group; `left: true` = the owner removed me — the group is kept read-only with its history, `group.send` answers `-32602`, it flips back when the owner re-admits me) |
 | `group.get` | `{gid}` | `{group}` | One group in full (`member_list`, `profile`, `pins`, `my_role`, owner-side `applications` included). Unknown → `-32004` |
 | `group.send` | `{gid, body, by?, auto?}` | `{id, seq, status}` | Encrypt once with my sender chain, upload one group envelope; the relay fans it out. `by`: `owner` (default) / `alter` — the group profile's speak switches are enforced locally AND by every receiver; `auto` marks the alter's automatic posts. `status`: `sent` / `error` (relay unreachable or rejected; the archived entry carries it) |
 | `group.conversation` | `{gid, since?, limit?}` | `{entries[]}` | The group archive (same entry shape as `conversation.get`; `from` = who spoke) |
 | `group.markRead` | `{gid, seq}` | `{ok}` | Move the group read cursor to entry `seq`; `seq <= 0` = everything read |
-| `group.leave` | `{gid}` | `{ok}` | Tell the owner to drop me, forget the group locally (archive kept). The owner cannot leave → `-32602` |
+| `group.leave` | `{gid}` | `{ok}` | Tell the owner to drop me, forget the group locally (archive kept). On a group I was removed from (`left`) it only deletes the local record, no notice is sent. The owner cannot leave → `-32602` |
 | `group.kick` | `{gid, fp}` | `{ok}` | Owner: republish the roster without `fp` (every remaining member rekeys). Admin (per the profile): forward a `group_admin` kick to the owner, whose node executes it. Anyone else → `-32602` |
 | `group.setProfile` | `{gid, profile}` | `{ok}` | Owner only: republish the roster (version+1, re-signed) with the new governance profile; members converge on the fanned `group_update` |
 | `group.pin` | `{gid, body}` | `{pin}` | Owner/admins: pin an announcement on the group home (`pin = {id, from, ts, body}`). Fans a `group_pin`; pins live beside the chat stream, never in it; every change raises `group.updated` |
@@ -92,7 +92,7 @@ The `initialize` result carries the `methods` / `notifications` lists for capabi
 | `artifact.ready` | `{peer, artifact_id, artifact_name, artifact_path}` | All chunks of a large file arrived, sha256 verified, file written |
 | `presence.changed` | `{peer, on}` | A friend's presence changed. **Off by default** — only polled when the Go API sets `Peer.PresenceInterval`; not exposed on the command line yet |
 | `group.message` | `{gid, peer, seq, message}` | A group `text` was archived; `peer` = the member who spoke |
-| `group.updated` | `{gid}` | Joined / roster changed / pins changed / left one group — refetch `group.list` / `group.get` |
+| `group.updated` | `{gid, reason?, peer?, added?, removed?, message?}` | Something about one group changed — refetch `group.list` / `group.get`. `reason` says what: `created` / `joined` / `rejoined` (the owner re-admitted me, same conversation) / `roster` (`added[]` / `removed[]` = member fingerprints) / `removed` (I was removed; the group stays read-only, see `left`) / `left` / `pins` / `voices` (`peer` announced its seat agents; `message.voices` is the list, `message.body == "sync"` asks everyone to re-announce theirs) |
 | `group.application` | `{gid, peer, message}` | A stranger applied to join a group I own (join policy `apply`); `message.card` is the applicant's card, `message.body` the note — answer with `group.approve` / `group.applicationReject` |
 
 Every notification carries `kind` (= method name) and `ts`.

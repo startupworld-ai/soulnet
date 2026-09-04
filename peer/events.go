@@ -21,6 +21,20 @@ const (
 	EventGroupApplication = "group.application" // a stranger applied to join a group I own (GID, Peer = applicant, Message = the group_join)
 )
 
+// Reasons carried by group.updated (Event.Reason). Hosts that only need "refetch the
+// group" can ignore them; hosts that hang product behaviour on membership transitions
+// (announce my seat agents on join, stop composing when removed, …) branch on them.
+const (
+	GroupReasonCreated  = "created"  // GroupCreate succeeded on this node
+	GroupReasonJoined   = "joined"   // an invite landed and I joined a group I did not hold
+	GroupReasonRejoined = "rejoined" // the owner re-admitted me after a removal (same conversation continues)
+	GroupReasonRoster   = "roster"   // membership / governance profile changed (Added / Removed list the fingerprints)
+	GroupReasonRemoved  = "removed"  // I was removed: the group stays on disk read-only (Peer.GroupLeft)
+	GroupReasonLeft     = "left"     // I left the group, or deleted a removed group's local record
+	GroupReasonPins     = "pins"     // the pinned announcements changed
+	GroupReasonVoices   = "voices"   // a member announced its seat-agent names (Peer = who, Message = the announcement)
+)
+
 // Event is one notification produced by the receive loop. Fields are set per Kind.
 type Event struct {
 	Kind string    `json:"kind"`
@@ -52,4 +66,12 @@ type Event struct {
 	On bool `json:"on"`
 	// Agent: on group.typing the name of the sender's seat agent that is working ("" = their alter).
 	Agent string `json:"agent,omitempty"`
+
+	// Reason: on group.updated one of the GroupReason* constants (empty on events emitted
+	// by older code paths; treat as "refetch").
+	Reason string `json:"reason,omitempty"`
+	// Added / Removed: on group.updated with Reason=roster the member fingerprints that
+	// entered / left the roster in this update (sorted; either may be empty).
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
 }
