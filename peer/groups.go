@@ -1137,7 +1137,7 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		if err != nil {
 			return err
 		}
-		n.logf("[grp-debug] RECEIVED text gid=%s sender=%s seq=%d body=%q", a2a.ShortFp(gid), a2a.ShortFp(senderFp), seq, stored.Body)
+		n.logf("[grp-debug] RECEIVED text gid=%s sender=%s seq=%d bytes=%d", a2a.ShortFp(gid), a2a.ShortFp(senderFp), seq, len(stored.Body))
 		n.emit(Event{Kind: EventGroupMessage, GID: gid, Peer: senderFp, TS: time.Now(), Message: &stored, Seq: seq})
 		return nil
 	default:
