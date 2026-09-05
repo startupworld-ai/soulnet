@@ -168,6 +168,142 @@ func (s *GroupStore) FindMemberCard(fp string) *Card {
 	return nil
 }
 
+// ——— Announced member cards (groups/<gid>/cards.json) ———
+//
+// A member that renamed itself piggybacks its re-signed card on its next group post
+// (Message.Card on a fan-out text). The roster still carries the card the owner signed
+// at invite time, so the announced card is kept per group as the fresher truth until
+// the owner converges the roster (or forever, under an owner that never republishes).
+// Keyed by member fingerprint; every card was verified against the envelope signer
+// before it got here.
+
+func (s *GroupStore) cardsPath(gid string) string { return filepath.Join(s.dir(gid), "cards.json") }
+
+// MemberCards returns the cards co-members announced in one group (fingerprint → card).
+// Empty map when none.
+func (s *GroupStore) MemberCards(gid string) map[string]*Card {
+	out := map[string]*Card{}
+	raw, err := os.ReadFile(s.cardsPath(gid))
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	for fp, c := range out {
+		if c == nil {
+			delete(out, fp)
+		}
+	}
+	return out
+}
+
+// PutMemberCard stores one member's announced card (idempotent on the signature).
+// Reports whether the file changed.
+func (s *GroupStore) PutMemberCard(gid string, card *Card) (bool, error) {
+	if card == nil {
+		return false, fmt.Errorf("member card is required")
+	}
+	fp, err := card.Fingerprint()
+	if err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cards := s.MemberCards(gid)
+	if prev := cards[fp]; prev != nil && prev.Sig == card.Sig {
+		return false, nil
+	}
+	cards[fp] = card
+	return true, s.writeMemberCards(gid, cards)
+}
+
+// PruneMemberCards drops every announced card for which keep returns false (a member
+// left, or the owner-signed roster now carries a different card for them).
+func (s *GroupStore) PruneMemberCards(gid string, keep func(fp string, c *Card) bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cards := s.MemberCards(gid)
+	changed := false
+	for fp, c := range cards {
+		if !keep(fp, c) {
+			delete(cards, fp)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.writeMemberCards(gid, cards)
+}
+
+func (s *GroupStore) writeMemberCards(gid string, cards map[string]*Card) error {
+	if len(cards) == 0 {
+		err := os.Remove(s.cardsPath(gid))
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(s.dir(gid), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(cards, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.cardsPath(gid), raw, 0o644)
+}
+
+// ——— Card-sync record (groups/<gid>/cardsync.json) ———
+//
+// Which version of MY card each co-member last received through this group, keyed by
+// member fingerprint → card signature (a card's signature is deterministic for the same
+// fields, so "same signature" means "same card"). A sender attaches its card to a post
+// only while some co-member holds an older version; nothing is ever sent for a card
+// that did not change.
+
+func (s *GroupStore) cardSyncPath(gid string) string {
+	return filepath.Join(s.dir(gid), "cardsync.json")
+}
+
+// CardSync returns the per-member record of my card signature they last received.
+func (s *GroupStore) CardSync(gid string) map[string]string {
+	out := map[string]string{}
+	raw, err := os.ReadFile(s.cardSyncPath(gid))
+	if err != nil {
+		return out
+	}
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
+// MarkCardSynced records that every fingerprint in fps received my card with signature sig.
+func (s *GroupStore) MarkCardSynced(gid string, fps []string, sig string) error {
+	if sig == "" || len(fps) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.CardSync(gid)
+	changed := false
+	for _, fp := range fps {
+		if fp != "" && rec[fp] != sig {
+			rec[fp] = sig
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if err := os.MkdirAll(s.dir(gid), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.cardSyncPath(gid), raw, 0o644)
+}
+
 // ——— Pins (groups/<gid>/pins.json): the announcements on the group home ———
 
 // GroupPin is one pinned announcement.

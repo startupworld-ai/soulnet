@@ -247,10 +247,11 @@ func (n *Peer) groupView(st *a2a.GroupState, preview int) *GroupView {
 		v.MemberTruncated = true
 	}
 	notes := n.friendNotes()
+	announced := n.Groups.MemberCards(gid)
 	v.MemberList = make([]GroupMemberView, 0, count)
 	for _, fp := range ix.order[:count] {
 		v.MemberList = append(v.MemberList, GroupMemberView{Fp: fp,
-			Name: memberName(ix.byFp[fp], fp, notes, me, myName), Agents: v.Voices[fp]})
+			Name: memberName(memberCard(ix.byFp[fp], announced, fp), fp, notes, me, myName), Agents: v.Voices[fp]})
 	}
 	return v
 }
@@ -320,6 +321,7 @@ func (n *Peer) GroupNames(gid string, fps []string) map[string]string {
 	}
 	ix := n.rosterIndexOf(st)
 	notes := n.friendNotes()
+	announced := n.Groups.MemberCards(gid)
 	me, myName := "", ""
 	if id := n.Identity(); id != nil {
 		me, myName = id.Fingerprint(), id.Name
@@ -332,7 +334,7 @@ func (n *Peer) GroupNames(gid string, fps []string) map[string]string {
 		if _, done := out[fp]; done {
 			continue
 		}
-		if name := memberName(ix.byFp[fp], fp, notes, me, myName); name != "" {
+		if name := memberName(memberCard(ix.byFp[fp], announced, fp), fp, notes, me, myName); name != "" {
 			out[fp] = name
 		}
 	}
@@ -351,6 +353,7 @@ func (n *Peer) GroupMembers(gid, q string, offset, limit int) (*GroupMembersPage
 	}
 	ix := n.rosterIndexOf(st)
 	notes := n.friendNotes()
+	announced := n.Groups.MemberCards(gid)
 	voices := n.GroupVoices(gid)
 	me, myName := "", ""
 	if id := n.Identity(); id != nil {
@@ -359,7 +362,7 @@ func (n *Peer) GroupMembers(gid, q string, offset, limit int) (*GroupMembersPage
 	q = strings.ToLower(strings.TrimSpace(q))
 	hits := make([]GroupMemberView, 0, 64)
 	for _, fp := range ix.order {
-		name := memberName(ix.byFp[fp], fp, notes, me, myName)
+		name := memberName(memberCard(ix.byFp[fp], announced, fp), fp, notes, me, myName)
 		if !groupMemberMatch(name, fp, voices[fp], q) {
 			continue
 		}
@@ -731,6 +734,9 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 	ctx = ctxOrBackground(ctx)
 	msg := &a2a.Message{ID: n.newMsgID(), From: me, GID: gid, TS: time.Now(), Type: a2a.TypeText,
 		Body: body, By: opts.By, Auto: opts.Auto, Agent: opts.Agent}
+	// Lazy card sync (see cards.go): ride my re-signed card on this post while some
+	// co-member still holds an older version.
+	cardSig := n.attachGroupCard(st, msg)
 	res := &SendResult{ID: msg.ID, Status: "sent"}
 	if err := n.fanOutGroup(ctx, st, msg); err != nil {
 		n.logf("group %s: fan-out delivery failed: %v", a2a.ShortFp(gid), err)
@@ -738,8 +744,11 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 		go n.refreshRoster(context.Background(), gid) // maybe the roster moved on without us
 	} else {
 		n.logf("<<< group mail gid=%s id=%s by=%s", a2a.ShortFp(gid), msg.ID, msg.By)
+		n.markGroupCardSent(st, cardSig)
 	}
-	seq, err := n.Convs.AppendSeq(a2a.GroupConvKey(gid), &a2a.ConvEntry{Dir: "out", Message: *msg, Status: res.Status})
+	stored := *msg
+	stored.Card = nil // my own card has no business in my archive
+	seq, err := n.Convs.AppendSeq(a2a.GroupConvKey(gid), &a2a.ConvEntry{Dir: "out", Message: stored, Status: res.Status})
 	if err != nil {
 		return nil, err
 	}
@@ -1078,7 +1087,7 @@ func (n *Peer) GroupKick(ctx context.Context, gid, fp string) error {
 	}
 	ctx = ctxOrBackground(ctx)
 	if st.Roster.OwnerFp() == me {
-		return n.republishRoster(ctx, st, []string{fp}, nil, nil)
+		return n.republishRoster(ctx, st, []string{fp}, nil, nil, nil)
 	}
 	if st.Roster.Profile.IsAdmin(me) {
 		if fp == st.Roster.OwnerFp() {
@@ -1099,13 +1108,24 @@ func (n *Peer) GroupKick(ctx context.Context, gid, fp string) error {
 // setProfile: drop and/or add members, optionally replace the profile, bump the version,
 // sign, publish, then converge everyone — dropped members trigger a rekey and get a
 // pairwise removal notice, added members get a pairwise group_invite plus my sender key,
-// and the group is poked (group_update fan-out) to refetch.
-func (n *Peer) republishRoster(ctx context.Context, st *a2a.GroupState, drop []string, add []*a2a.Card, newProfile *a2a.GroupProfile) error {
+// and the group is poked (group_update fan-out) to refetch. refresh swaps the cards of
+// members already present (a member announced a re-signed card, see cards.go): same
+// seat, same keys, newer nickname - no rekey, no invite, just the poke.
+func (n *Peer) republishRoster(ctx context.Context, st *a2a.GroupState, drop []string, add []*a2a.Card, refresh []*a2a.Card, newProfile *a2a.GroupProfile) error {
 	id := n.Identity()
 	old := st.Roster
 	dropSet := map[string]bool{}
 	for _, fp := range drop {
 		dropSet[fp] = true
+	}
+	fresh := map[string]*a2a.Card{}
+	for _, c := range refresh {
+		if c == nil {
+			continue
+		}
+		if f, err := c.Fingerprint(); err == nil {
+			fresh[f] = c
+		}
 	}
 	next := &a2a.GroupRoster{V: 1, GroupID: old.GroupID, Name: old.Name, OwnerPub: old.OwnerPub,
 		Relay: old.Relay, Version: old.Version + 1, TS: time.Now()}
@@ -1119,6 +1139,9 @@ func (n *Peer) republishRoster(ctx context.Context, st *a2a.GroupState, drop []s
 		if dropSet[f] {
 			droppedCards = append(droppedCards, c)
 			continue
+		}
+		if nc := fresh[f]; nc != nil {
+			c = nc
 		}
 		next.Members = append(next.Members, c)
 		present[f] = true
@@ -1296,12 +1319,14 @@ func (n *Peer) applyRoster(ctx context.Context, st *a2a.GroupState, next *a2a.Gr
 		// would take a same-epoch chain for a replay, one that forgot me accepts any
 		// epoch; a higher epoch covers both. The diff against the roster I held while
 		// out is meaningless, so the add/remove bookkeeping below is skipped.
+		prev := st.Roster
 		st.Roster = next
 		st.JoinedAt = time.Now()
 		if err := n.Groups.Put(st); err != nil {
 			n.logf("group %s: storing roster update: %v", a2a.ShortFp(gid), err)
 			return false
 		}
+		n.pruneAnnouncedCards(gid, prev, next)
 		n.clearGroupLeft(gid)
 		n.rekeyGroup(ctx, st, "re-admitted")
 		n.logf("re-joined group %q (%s), %d members (same conversation)", next.Name, a2a.ShortFp(gid), len(next.Members))
@@ -1326,11 +1351,13 @@ func (n *Peer) applyRoster(ctx context.Context, st *a2a.GroupState, next *a2a.Gr
 			removed = append(removed, fp)
 		}
 	}
+	prev := st.Roster
 	st.Roster = next
 	if err := n.Groups.Put(st); err != nil {
 		n.logf("group %s: storing roster update: %v", a2a.ShortFp(gid), err)
 		return false
 	}
+	n.pruneAnnouncedCards(gid, prev, next)
 	if len(removed) > 0 {
 		n.rekeyGroup(ctx, st, "member removal")
 	} else {
@@ -1514,6 +1541,11 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 			return err
 		}
 		n.logf("[grp-debug] RECEIVED text gid=%s sender=%s seq=%d bytes=%d", a2a.ShortFp(gid), a2a.ShortFp(senderFp), seq, len(stored.Body))
+		if msg.Card != nil {
+			// The sender piggybacked its (possibly renamed) card: verify, cache, refresh
+			// the friend snapshot, converge the roster when I own the group (cards.go).
+			n.absorbGroupCard(context.Background(), st, senderFp, msg.Card)
+		}
 		n.emit(Event{Kind: EventGroupMessage, GID: gid, Peer: senderFp, TS: time.Now(), Message: &stored, Seq: seq})
 		return nil
 	default:
@@ -1676,7 +1708,7 @@ func (n *Peer) handleGroupLeave(msg *a2a.Message) error {
 	if st.Roster.Member(msg.From) == nil {
 		return nil // already gone
 	}
-	if err := n.republishRoster(context.Background(), st, []string{msg.From}, nil, nil); err != nil {
+	if err := n.republishRoster(context.Background(), st, []string{msg.From}, nil, nil, nil); err != nil {
 		return err // transient: retried next round
 	}
 	n.logf("group %s: %s left (roster now v%d)", a2a.ShortFp(msg.GID), a2a.ShortFp(msg.From), st.Roster.Version)
@@ -1705,7 +1737,7 @@ func (n *Peer) GroupSetProfile(ctx context.Context, gid string, p *a2a.GroupProf
 	if err := p.Validate(st.Roster.MemberFps()); err != nil {
 		return fmt.Errorf("%w: %v", ErrBadProfile, err)
 	}
-	return n.republishRoster(ctxOrBackground(ctx), st, nil, nil, p)
+	return n.republishRoster(ctxOrBackground(ctx), st, nil, nil, nil, p)
 }
 
 // GroupPin pins an announcement on the group home (owner/admins only): fans a group_pin
@@ -1900,7 +1932,7 @@ func (n *Peer) handleGroupJoin(msg *a2a.Message) error {
 	}
 	switch policy {
 	case a2a.JoinOpen:
-		if err := n.republishRoster(context.Background(), st, nil, []*a2a.Card{msg.Card}, nil); err != nil {
+		if err := n.republishRoster(context.Background(), st, nil, []*a2a.Card{msg.Card}, nil, nil); err != nil {
 			return err // transient: retried next round
 		}
 		n.logf("group %s: open join — added %s", a2a.ShortFp(gid), a2a.ShortFp(fp))
@@ -1984,7 +2016,7 @@ func (n *Peer) GroupApprove(ctx context.Context, gid, fp string) error {
 		}
 	}
 	if st.Roster.Member(fp) == nil {
-		if err := n.republishRoster(ctxOrBackground(ctx), st, nil, []*a2a.Card{app.Card}, nil); err != nil {
+		if err := n.republishRoster(ctxOrBackground(ctx), st, nil, []*a2a.Card{app.Card}, nil, nil); err != nil {
 			return err
 		}
 	}
@@ -2025,7 +2057,7 @@ func (n *Peer) GroupInvite(ctx context.Context, gid, friendFp string) error {
 	me := n.Fingerprint()
 	ctx = ctxOrBackground(ctx)
 	if st.Roster.OwnerFp() == me {
-		return n.republishRoster(ctx, st, nil, []*a2a.Card{fr.Card}, nil)
+		return n.republishRoster(ctx, st, nil, []*a2a.Card{fr.Card}, nil, nil)
 	}
 	if st.Roster.Profile.IsAdmin(me) {
 		ownerCard := st.Roster.Member(st.Roster.OwnerFp())
@@ -2069,7 +2101,7 @@ func (n *Peer) handleGroupAdmin(msg *a2a.Message) error {
 		if st.Roster.Member(fp) != nil {
 			return nil // already a member
 		}
-		if err := n.republishRoster(ctx, st, nil, []*a2a.Card{msg.Card}, nil); err != nil {
+		if err := n.republishRoster(ctx, st, nil, []*a2a.Card{msg.Card}, nil, nil); err != nil {
 			return err // transient: retried next round
 		}
 		n.logf("group %s: admin %s invited %s", a2a.ShortFp(gid), a2a.ShortFp(msg.From), a2a.ShortFp(fp))
@@ -2083,7 +2115,7 @@ func (n *Peer) handleGroupAdmin(msg *a2a.Message) error {
 		if st.Roster.Member(fp) == nil {
 			return nil // already gone
 		}
-		if err := n.republishRoster(ctx, st, []string{fp}, nil, nil); err != nil {
+		if err := n.republishRoster(ctx, st, []string{fp}, nil, nil, nil); err != nil {
 			return err
 		}
 		n.logf("group %s: admin %s kicked %s", a2a.ShortFp(gid), a2a.ShortFp(msg.From), a2a.ShortFp(fp))
