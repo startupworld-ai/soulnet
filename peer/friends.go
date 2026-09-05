@@ -107,7 +107,7 @@ func (n *Peer) Accept(ctx context.Context, pendingID, note string) (*a2a.Friend,
 	if err := n.Friends.Add(card, note); err != nil {
 		return nil, err
 	}
-	go n.syncFriendProfile(toFp)
+	go n.SyncFriendProfile(toFp)
 	myCard, err := n.Card()
 	if err != nil {
 		return nil, err
@@ -207,10 +207,11 @@ func (n *Peer) MarkRead(fp string, seq int) error {
 	return n.Friends.MarkRead(fp, t)
 }
 
-// syncFriendProfile fetches the peer's full capability profile from the directory after
-// befriending and stores it at profiles/<fp>.json. Not found / verification failure /
-// directory unreachable all degrade silently (logged).
-func (n *Peer) syncFriendProfile(fp string) *a2a.Profile {
+// SyncFriendProfile fetches the peer's full capability profile from the directory (after
+// befriending, or on demand when a host needs it and the local copy is missing) and stores
+// it at profiles/<fp>.json. Card and profile signatures and the fingerprint must agree.
+// Not found / verification failure / directory unreachable all degrade to nil (logged).
+func (n *Peer) SyncFriendProfile(fp string) *a2a.Profile {
 	if fp == "" {
 		return nil
 	}

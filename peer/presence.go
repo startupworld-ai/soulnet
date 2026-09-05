@@ -29,6 +29,10 @@ func (n *Peer) Presence(fps []string) map[string]bool {
 	return out
 }
 
+// PeerOnline reports whether one friend is online (long-polled its relay in the last
+// 75s); the answer is cached for 10s. Non-friend / no card → false.
+func (n *Peer) PeerOnline(fp string) bool { return n.peerOnline(n.Friends.Get(fp)) }
+
 func (n *Peer) peerOnline(fr *a2a.Friend) bool {
 	if fr == nil || fr.Card == nil || len(fr.Card.Proxies) == 0 {
 		return false

@@ -83,8 +83,12 @@ func (n *Peer) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		n.heartbeat(HeartbeatTick)
 		n.flushOutbox(ctx)
 		pc := n.proxyClient()
+		if pc == nil {
+			return ErrNoIdentity // the identity was cleared while running: the host restarts us when it is back
+		}
 		items, err := pc.Poll(ctx, PollWaitSec)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -102,6 +106,7 @@ func (n *Peer) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = 5 * time.Second
+		n.heartbeat(HeartbeatPollOK)
 		if len(items) > 0 {
 			n.logf("[recv-debug] poll returned %d item(s)", len(items))
 		}
@@ -185,8 +190,16 @@ func (n *Peer) handleEnvelope(env *a2a.Envelope) error {
 	if err != nil {
 		return err
 	}
+	if n.OnInbound != nil {
+		n.OnInbound(msg)
+	}
 	return n.dispatch(msg)
 }
+
+// HandleEnvelope processes one envelope exactly as the Run loop does (group fan-out or
+// pairwise: decrypt, OnInbound, dispatch) for hosts or tests that feed mail in by hand.
+// Errors classify with IsPermanent.
+func (n *Peer) HandleEnvelope(env *a2a.Envelope) error { return n.handleEnvelope(env) }
 
 // OpenEnvelope decrypts one PAIRWISE envelope (Envelope.GID empty) into its inner message
 // for hosts that run their own receive loop: resolves the sender's encryption key (a
@@ -255,6 +268,11 @@ func (n *Peer) dispatch(msg *a2a.Message) error {
 		return nil
 	}
 	n.setPeerTyping(peer, false)
+	// A host-registered handler owns the type (see Handle): product message types the
+	// peer does not know, or a built-in one the host chose to take over.
+	if h := n.handler(msg.Type); h != nil {
+		return h(msg)
+	}
 	switch msg.Type {
 	case a2a.TypeFriendRequest:
 		return n.handleFriendRequest(msg)
@@ -310,7 +328,7 @@ func (n *Peer) handleFriendAccept(msg *a2a.Message) error {
 	if err := n.Friends.Add(msg.Card, ""); err != nil {
 		return err
 	}
-	go n.syncFriendProfile(msg.From)
+	go n.SyncFriendProfile(msg.From)
 	fr := n.Friends.Get(msg.From)
 	n.logf("%s accepted the friend request", a2a.ShortFp(msg.From))
 	n.emit(Event{Kind: EventFriendAccepted, Peer: msg.From, TS: time.Now(), Friend: fr})

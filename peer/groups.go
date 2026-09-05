@@ -90,10 +90,31 @@ type GroupApplicationView struct {
 	Payment *a2a.JoinPayment `json:"payment,omitempty"`
 }
 
+// GroupMemberPreview is how many members GroupInfoMembers carries by default: a large
+// roster must not be shipped in full on every poll of the info view (the full list and
+// search go through GroupMembers).
+const GroupMemberPreview = 50
+
+// GroupMembersMaxPage caps one page of GroupMembers / GroupInvitable.
+const GroupMembersMaxPage = 200
+
 // GroupView is one group in full (info view).
 type GroupView struct {
 	GroupSummary
+	// MemberList is the member preview in display order (owner → admins → the rest).
+	// GroupInfo carries every member; GroupInfoMembers carries `preview` of them and sets
+	// MemberTruncated when it cut the list.
 	MemberList []GroupMemberView `json:"member_list"`
+	// MemberTruncated marks MemberList as a preview (see GroupInfoMembers).
+	MemberTruncated bool `json:"member_truncated,omitempty"`
+	// Voices maps member fingerprint → the seat-agent names that member announced
+	// (group-wide, independent of the member preview; only members with seats appear).
+	Voices map[string][]string `json:"voices,omitempty"`
+	// MyFp is my own fingerprint (UIs exclude it from member pickers).
+	MyFp string `json:"my_fp,omitempty"`
+	// URI is the group handle (soulmirror://group?…) strangers use to look the group up
+	// and apply; whether sharing it makes sense depends on the join policy.
+	URI string `json:"uri,omitempty"`
 	// Pins are the pinned announcements (oldest first).
 	Pins []a2a.GroupPin `json:"pins,omitempty"`
 	// MyRole is my standing in this group: owner | admin | member.
@@ -118,36 +139,265 @@ func (n *Peer) GroupSummaryOf(st *a2a.GroupState) GroupSummary {
 	return s
 }
 
-func (n *Peer) groupView(st *a2a.GroupState) *GroupView {
+// rosterIndex is a per-roster-version cache: fingerprint → card plus the display order
+// (owner → admins → the rest, roster order within each). Fingerprinting a thousand cards
+// (base64 + SHA-256) on every info poll is what this avoids; a roster only changes with
+// its version.
+type rosterIndex struct {
+	version int
+	n       int
+	ownerFp string
+	byFp    map[string]*a2a.Card
+	order   []string
+}
+
+func (n *Peer) rosterIndexOf(st *a2a.GroupState) *rosterIndex {
+	gid := st.Roster.GroupID
+	n.riMu.Lock()
+	defer n.riMu.Unlock()
+	if n.rosterIdx == nil {
+		n.rosterIdx = map[string]*rosterIndex{}
+	}
+	if ix := n.rosterIdx[gid]; ix != nil && ix.version == st.Roster.Version && ix.n == len(st.Roster.Members) {
+		return ix
+	}
+	ownerFp := st.Roster.OwnerFp()
+	ix := &rosterIndex{version: st.Roster.Version, n: len(st.Roster.Members), ownerFp: ownerFp,
+		byFp: make(map[string]*a2a.Card, len(st.Roster.Members))}
+	var owner, admins, rest []string
+	for _, c := range st.Roster.Members {
+		fp, err := c.Fingerprint()
+		if err != nil {
+			continue
+		}
+		if _, dup := ix.byFp[fp]; dup {
+			continue
+		}
+		ix.byFp[fp] = c
+		switch {
+		case fp == ownerFp:
+			owner = append(owner, fp)
+		case st.Roster.Profile.IsAdmin(fp):
+			admins = append(admins, fp)
+		default:
+			rest = append(rest, fp)
+		}
+	}
+	ix.order = append(append(append(make([]string, 0, len(ix.byFp)), owner...), admins...), rest...)
+	n.rosterIdx[gid] = ix
+	return ix
+}
+
+// friendNotes loads every friend note once (FriendStore.Get parses friends.yaml on each
+// call; per-member lookups on a large roster would be thousands of reads).
+func (n *Peer) friendNotes() map[string]string {
+	out := map[string]string{}
+	for _, fr := range n.Friends.Friends() {
+		if fr != nil && strings.TrimSpace(fr.Note) != "" {
+			out[fr.Fingerprint] = strings.TrimSpace(fr.Note)
+		}
+	}
+	return out
+}
+
+// memberName is the display-name rule for one member: my friend note for them beats the
+// name on their roster card; I am shown under my own identity name.
+func memberName(c *a2a.Card, fp string, notes map[string]string, me, myName string) string {
+	name := ""
+	if c != nil {
+		name = c.Name
+	}
+	if v := notes[fp]; v != "" {
+		name = v
+	}
+	if fp == me && myName != "" {
+		name = myName
+	}
+	return name
+}
+
+// groupView builds the info view. preview < 0 carries every member, 0 none, otherwise the
+// first preview members in display order (MemberTruncated set when cut).
+func (n *Peer) groupView(st *a2a.GroupState, preview int) *GroupView {
 	v := &GroupView{GroupSummary: n.GroupSummaryOf(st)}
-	me := n.Fingerprint()
+	me, myName := "", ""
+	if id := n.Identity(); id != nil {
+		me, myName = id.Fingerprint(), id.Name
+	}
+	v.MyFp = me
+	ix := n.rosterIndexOf(st)
 	switch {
-	case st.Roster.OwnerFp() == me:
+	case ix.ownerFp == me:
 		v.MyRole = "owner"
 	case st.Roster.Profile.IsAdmin(me):
 		v.MyRole = "admin"
 	default:
 		v.MyRole = "member"
 	}
-	v.Pins = n.Groups.Pins(st.Roster.GroupID)
+	gid := st.Roster.GroupID
+	v.Pins = n.Groups.Pins(gid)
 	if v.MyRole == "owner" {
-		v.Applications = n.groupApplicationViews(st.Roster.GroupID)
+		v.Applications = n.groupApplicationViews(gid)
 	}
-	for _, c := range st.Roster.Members {
-		fp, err := c.Fingerprint()
-		if err != nil {
-			continue
-		}
-		name := c.Name
-		if fr := n.Friends.Get(fp); fr != nil && strings.TrimSpace(fr.Note) != "" {
-			name = fr.Note
-		}
-		if fp == n.Fingerprint() {
-			name = n.Identity().Name
-		}
-		v.MemberList = append(v.MemberList, GroupMemberView{Fp: fp, Name: name, Agents: n.voicesOf(st.Roster.GroupID, fp)})
+	v.Voices = n.GroupVoices(gid)
+	v.URI = a2a.EncodeGroupURI(gid, st.Roster.Relay, st.Roster.Name)
+	count := len(ix.order)
+	if preview >= 0 && preview < count {
+		count = preview
+		v.MemberTruncated = true
+	}
+	notes := n.friendNotes()
+	v.MemberList = make([]GroupMemberView, 0, count)
+	for _, fp := range ix.order[:count] {
+		v.MemberList = append(v.MemberList, GroupMemberView{Fp: fp,
+			Name: memberName(ix.byFp[fp], fp, notes, me, myName), Agents: v.Voices[fp]})
 	}
 	return v
+}
+
+// GroupMembersPage is one page of GroupMembers / GroupInvitable.
+type GroupMembersPage struct {
+	Members []GroupMemberView `json:"members"`
+	// Total is the group size (GroupInvitable: the number of candidate friends).
+	Total int `json:"total"`
+	// Matched is how many rows matched the query (== Total for an empty query).
+	Matched int `json:"matched"`
+	Offset  int `json:"offset"`
+	Limit   int `json:"limit"`
+}
+
+// groupMemberMatch: the (lower-cased) query is contained in the name, prefixes the
+// fingerprint, or is contained in one of the announced seat names.
+func groupMemberMatch(name, fp string, agents []string, q string) bool {
+	if q == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(name), q) || strings.HasPrefix(strings.ToLower(fp), q) {
+		return true
+	}
+	for _, a := range agents {
+		if strings.Contains(strings.ToLower(a), q) {
+			return true
+		}
+	}
+	return false
+}
+
+func groupPageSlice(items []GroupMemberView, offset, limit int) *GroupMembersPage {
+	matched := len(items)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > GroupMembersMaxPage {
+		limit = GroupMembersMaxPage
+	}
+	if offset > matched {
+		offset = matched
+	}
+	end := offset + limit
+	if end > matched {
+		end = matched
+	}
+	return &GroupMembersPage{Members: items[offset:end], Matched: matched, Offset: offset, Limit: limit}
+}
+
+// GroupInfoMembers is GroupInfo with a member preview: preview < 0 = every member, 0 =
+// none (names then come from GroupNames), otherwise the first preview members.
+func (n *Peer) GroupInfoMembers(gid string, preview int) (*GroupView, error) {
+	st := n.Groups.Get(gid)
+	if st == nil {
+		return nil, ErrNoGroup
+	}
+	return n.groupView(st, preview), nil
+}
+
+// GroupNames resolves fingerprints to their display names in one group (friend note
+// beats roster name; unknown fingerprints are skipped). nil when nothing resolved.
+func (n *Peer) GroupNames(gid string, fps []string) map[string]string {
+	st := n.Groups.Get(gid)
+	if st == nil || len(fps) == 0 {
+		return nil
+	}
+	ix := n.rosterIndexOf(st)
+	notes := n.friendNotes()
+	me, myName := "", ""
+	if id := n.Identity(); id != nil {
+		me, myName = id.Fingerprint(), id.Name
+	}
+	out := map[string]string{}
+	for _, fp := range fps {
+		if fp == "" {
+			continue
+		}
+		if _, done := out[fp]; done {
+			continue
+		}
+		if name := memberName(ix.byFp[fp], fp, notes, me, myName); name != "" {
+			out[fp] = name
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// GroupMembers pages / searches the members of one group in display order (owner →
+// admins → the rest). An empty q pages the whole roster.
+func (n *Peer) GroupMembers(gid, q string, offset, limit int) (*GroupMembersPage, error) {
+	st := n.Groups.Get(gid)
+	if st == nil {
+		return nil, ErrNoGroup
+	}
+	ix := n.rosterIndexOf(st)
+	notes := n.friendNotes()
+	voices := n.GroupVoices(gid)
+	me, myName := "", ""
+	if id := n.Identity(); id != nil {
+		me, myName = id.Fingerprint(), id.Name
+	}
+	q = strings.ToLower(strings.TrimSpace(q))
+	hits := make([]GroupMemberView, 0, 64)
+	for _, fp := range ix.order {
+		name := memberName(ix.byFp[fp], fp, notes, me, myName)
+		if !groupMemberMatch(name, fp, voices[fp], q) {
+			continue
+		}
+		hits = append(hits, GroupMemberView{Fp: fp, Name: name, Agents: voices[fp]})
+	}
+	page := groupPageSlice(hits, offset, limit)
+	page.Total = len(ix.order)
+	return page, nil
+}
+
+// GroupInvitable pages / searches my friends who are NOT in the group yet - the
+// candidates for an invite (a client that only holds a member preview cannot compute
+// this intersection itself).
+func (n *Peer) GroupInvitable(gid, q string, offset, limit int) (*GroupMembersPage, error) {
+	st := n.Groups.Get(gid)
+	if st == nil {
+		return nil, ErrNoGroup
+	}
+	ix := n.rosterIndexOf(st)
+	q = strings.ToLower(strings.TrimSpace(q))
+	all, hits := 0, make([]GroupMemberView, 0, 32)
+	for _, fr := range n.Friends.Friends() {
+		if fr == nil || ix.byFp[fr.Fingerprint] != nil {
+			continue
+		}
+		all++
+		name := strings.TrimSpace(fr.Note)
+		if name == "" && fr.Card != nil {
+			name = fr.Card.Name
+		}
+		if !groupMemberMatch(name, fr.Fingerprint, nil, q) {
+			continue
+		}
+		hits = append(hits, GroupMemberView{Fp: fr.Fingerprint, Name: name})
+	}
+	page := groupPageSlice(hits, offset, limit)
+	page.Total = all
+	return page, nil
 }
 
 // groupRelayClient talks to the group's home relay.
@@ -398,7 +648,7 @@ func (n *Peer) GroupCreate(ctx context.Context, name string, memberFps []string,
 	}
 	n.distributeSenderKey(ctx, st)
 	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonCreated})
-	return n.groupView(st), nil
+	return n.groupView(st, -1), nil
 }
 
 // GroupList returns every group I am in.
@@ -411,14 +661,8 @@ func (n *Peer) GroupList() []GroupSummary {
 	return out
 }
 
-// GroupInfo returns one group in full.
-func (n *Peer) GroupInfo(gid string) (*GroupView, error) {
-	st := n.Groups.Get(gid)
-	if st == nil {
-		return nil, ErrNoGroup
-	}
-	return n.groupView(st), nil
-}
+// GroupInfo returns one group in full (every member; see GroupInfoMembers for a preview).
+func (n *Peer) GroupInfo(gid string) (*GroupView, error) { return n.GroupInfoMembers(gid, -1) }
 
 // fanOutGroup seals msg once with my sender chain and posts ONE group envelope for the
 // relay to fan out. Missing key distributions are topped up first, and the advanced
@@ -611,30 +855,158 @@ func SanitizeVoices(in []string) []string {
 	return out
 }
 
+// ——— seat-agent voices roster (groups/<gid>/voices.json) ———
+//
+// Who announced which seat agents in a group is metadata the OTHER members sent us; kept
+// in memory only it would vanish on every restart and the announcing seat would drop out
+// of everyone's @-completion until it happens to re-announce. It is persisted next to
+// the group state (removed with the group), re-sanitised on load (self-declared data:
+// names through SanitizeVoices, only current roster members, at most MaxVoiceMembers
+// entries), and written only when an announcement actually changed something.
+
+// MaxVoiceMembers caps the persisted entries of one group's voices roster (a hard ceiling
+// on top of the roster size, so a huge group with every seat announcing cannot fill the
+// disk).
+const MaxVoiceMembers = 2000
+
+func (n *Peer) voicesPath(gid string) string {
+	return filepath.Join(n.Home, "a2a", "groups", a2a.SanitizeID(gid), "voices.json")
+}
+
+// loadVoices reads and sanitises one group's roster from disk (never nil; a broken file
+// degrades to empty - the next announcements rebuild it).
+func (n *Peer) loadVoices(gid string) map[string][]string {
+	out := map[string][]string{}
+	raw, err := os.ReadFile(n.voicesPath(gid))
+	if err != nil {
+		return out
+	}
+	var disk map[string][]string
+	if json.Unmarshal(raw, &disk) != nil {
+		n.logf("group %s: voices roster unreadable (starting empty)", a2a.ShortFp(gid))
+		return out
+	}
+	var roster *a2a.GroupRoster
+	if st := n.Groups.Get(gid); st != nil {
+		roster = st.Roster
+	}
+	fps := make([]string, 0, len(disk))
+	for fp := range disk {
+		fps = append(fps, fp)
+	}
+	sort.Strings(fps)
+	for _, fp := range fps {
+		if roster != nil && roster.Member(fp) == nil {
+			continue
+		}
+		names := SanitizeVoices(disk[fp])
+		if len(names) == 0 {
+			continue
+		}
+		out[fp] = names
+		if len(out) >= MaxVoiceMembers {
+			break
+		}
+	}
+	return out
+}
+
+// voicesLocked returns the in-memory roster of gid, loading it from disk on first use
+// (caller holds gvMu).
+func (n *Peer) voicesLocked(gid string) map[string][]string {
+	if n.groupVoices == nil {
+		n.groupVoices = map[string]map[string][]string{}
+	}
+	if m, ok := n.groupVoices[gid]; ok {
+		return m
+	}
+	m := n.loadVoices(gid)
+	n.groupVoices[gid] = m
+	return m
+}
+
+// writeVoicesLocked persists one group's roster (caller holds gvMu); empty = file removed.
+func (n *Peer) writeVoicesLocked(gid string, m map[string][]string) {
+	path := n.voicesPath(gid)
+	if len(m) == 0 {
+		_ = os.Remove(path)
+		return
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		return // no group directory (not joined): nothing to persist against
+	}
+	raw, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		n.logf("group %s: persisting voices roster: %v", a2a.ShortFp(gid), err)
+	}
+}
+
+func sameNames(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// setGroupVoices records one member's announced seat names (empty = entry removed);
+// memory and disk stay in step, unchanged announcements do not touch the disk.
 func (n *Peer) setGroupVoices(gid, fp string, voices []string) {
 	clean := SanitizeVoices(voices)
 	n.gvMu.Lock()
 	defer n.gvMu.Unlock()
-	if n.groupVoices == nil {
-		n.groupVoices = map[string]map[string][]string{}
-	}
-	byFp := n.groupVoices[gid]
-	if byFp == nil {
-		byFp = map[string][]string{}
-		n.groupVoices[gid] = byFp
-	}
+	m := n.voicesLocked(gid)
 	if len(clean) == 0 {
-		delete(byFp, fp)
-		return
+		if _, had := m[fp]; !had {
+			return
+		}
+		delete(m, fp)
+	} else {
+		if sameNames(m[fp], clean) {
+			return
+		}
+		if _, had := m[fp]; !had && len(m) >= MaxVoiceMembers {
+			n.logf("group %s: voices roster full (%d entries), dropping the announcement from %s", a2a.ShortFp(gid), MaxVoiceMembers, a2a.ShortFp(fp))
+			return
+		}
+		m[fp] = clean
 	}
-	byFp[fp] = clean
+	n.writeVoicesLocked(gid, m)
+}
+
+// SetGroupVoices records (or, with an empty list, clears) one member's seat-agent names
+// in a group's voices roster, exactly as an incoming announcement would. Hosts use it to
+// seed or prune the roster from their own knowledge; the receive path calls the same code.
+func (n *Peer) SetGroupVoices(gid, fp string, voices []string) { n.setGroupVoices(gid, fp, voices) }
+
+// GroupVoices returns a copy of one group's voices roster: member fingerprint → the seat
+// agent names they announced (nil when nobody announced any).
+func (n *Peer) GroupVoices(gid string) map[string][]string {
+	n.gvMu.Lock()
+	defer n.gvMu.Unlock()
+	src := n.voicesLocked(gid)
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(src))
+	for fp, names := range src {
+		out[fp] = append([]string(nil), names...)
+	}
+	return out
 }
 
 // voicesOf answers one member's announced agent names in a group (nil = none known).
 func (n *Peer) voicesOf(gid, fp string) []string {
 	n.gvMu.Lock()
 	defer n.gvMu.Unlock()
-	v := n.groupVoices[gid][fp]
+	v := n.voicesLocked(gid)[fp]
 	if len(v) == 0 {
 		return nil
 	}

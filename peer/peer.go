@@ -54,6 +54,33 @@ type Peer struct {
 	// protocol frames.
 	Logf func(format string, args ...any)
 
+	// ——— host hooks (all optional; nil = off) ———
+	//
+	// A host that carries product semantics on top of the peer (the SoulMirror daemon:
+	// an alter that answers, a task state machine, app sharing, …) must not need a second
+	// copy of the transport. These hooks are the seams: the peer owns polling, decrypting,
+	// dispatching, sealing, delivering and the outbox; the host owns what to do with a
+	// message.
+
+	// OnInbound is called with every decrypted PAIRWISE message before it is dispatched
+	// (typing included), from the receive loop. Cross-cutting product behaviour hangs
+	// here (absorb a card the sender piggybacked, bump an "inbound activity" marker).
+	OnInbound func(msg *a2a.Message)
+	// BeforeSend is called with every pairwise message after its identity fields were
+	// completed and right before it is sealed: the host may still amend it (for example
+	// attach its current card when the receiver's copy is known to be stale).
+	BeforeSend func(to *a2a.Card, msg *a2a.Message)
+	// AfterSend is called once the message was delivered (queued=false) or parked in the
+	// outbox for retry (queued=true). A failure that could not even be queued does not
+	// reach it.
+	AfterSend func(to *a2a.Card, msg *a2a.Message, queued bool)
+	// OnHeartbeat is called by the Run loop with a Heartbeat* kind so a host can watch
+	// the loop's liveness (watchdog, health endpoint) without running a loop of its own.
+	OnHeartbeat func(kind string)
+
+	handlerMu sync.RWMutex
+	handlers  map[string]MessageHandler
+
 	// PresenceInterval > 0 makes Run poll every friend's presence at that interval and
 	// emit presence.changed on changes. 0 (default) = no polling.
 	PresenceInterval time.Duration
@@ -67,9 +94,13 @@ type Peer struct {
 	presCac map[string]presEntry
 
 	// gvMu guards groupVoices: gid → member fp → that seat's announced agent names
-	// (TypeGroupVoices metadata; in-memory — every host re-announces on start).
+	// (TypeGroupVoices metadata; persisted at groups/<gid>/voices.json, see setGroupVoices).
 	gvMu        sync.Mutex
 	groupVoices map[string]map[string][]string
+
+	// riMu / rosterIdx: per-group roster index cache (see rosterIndexOf).
+	riMu      sync.Mutex
+	rosterIdx map[string]*rosterIndex
 
 	dlMu   sync.Mutex
 	dlSeen map[string]struct{} // dead-letter ackIDs already logged
@@ -171,6 +202,48 @@ func (n *Peer) CreateIdentity(name string) (*a2a.Identity, error) {
 	n.id = id
 	n.logf("identity created · name=%s fingerprint=%s relay=%s", id.Name, id.Fingerprint(), n.Relay)
 	return id, nil
+}
+
+// MessageHandler consumes one decrypted pairwise message of a type the host registered
+// with Handle. Return a transient error to leave the letter on the relay for a retry, or
+// wrap it with Permanent to have it acked and dropped.
+type MessageHandler func(msg *a2a.Message) error
+
+// Heartbeat kinds passed to OnHeartbeat by the Run loop.
+const (
+	HeartbeatTick     = "tick"     // a receive round started
+	HeartbeatPollOK   = "poll_ok"  // a long poll returned successfully (the relay is reachable)
+	HeartbeatProgress = "progress" // one queued envelope was re-sent from the outbox
+)
+
+// Handle registers the host's handler for one inner message type. A registered handler
+// REPLACES the peer's built-in handling of that type (archiving, events); the peer still
+// clears the sender's typing mark first. It is how a host consumes message types the
+// peer does not know (task, mission_update, mission_bid, app_share, …) and how it may
+// take over a built-in one. fn == nil removes the registration.
+func (n *Peer) Handle(typ string, fn MessageHandler) {
+	n.handlerMu.Lock()
+	defer n.handlerMu.Unlock()
+	if n.handlers == nil {
+		n.handlers = map[string]MessageHandler{}
+	}
+	if fn == nil {
+		delete(n.handlers, typ)
+		return
+	}
+	n.handlers[typ] = fn
+}
+
+func (n *Peer) handler(typ string) MessageHandler {
+	n.handlerMu.RLock()
+	defer n.handlerMu.RUnlock()
+	return n.handlers[typ]
+}
+
+func (n *Peer) heartbeat(kind string) {
+	if n.OnHeartbeat != nil {
+		n.OnHeartbeat(kind)
+	}
 }
 
 // SetIdentity installs an identity the host created, reloaded or renamed through its own

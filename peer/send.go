@@ -3,6 +3,7 @@ package peer
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,12 +17,126 @@ import (
 // no hard limit itself; this guards against accidents).
 const MaxSendFileBytes = 50 << 20
 
+// ErrQueued: the relay could not be reached, so the sealed envelope was parked in the
+// outbox and will be re-sent by the Run loop. The message is NOT lost, but it has not
+// been delivered either - a host should show it as "queued", never as "sent".
+// Test with errors.Is.
+var ErrQueued = fmt.Errorf("relay unreachable; queued in the outbox for retry")
+
 // SendResult is the outcome of one Send.
 type SendResult struct {
 	ID     string `json:"id"`
-	Seq    int    `json:"seq"`              // line number in the local conversation
+	Seq    int    `json:"seq"`              // line number in the local conversation (0 when not archived)
 	Status string `json:"status"`           // sent | queued (relay unreachable; queued in the outbox for automatic retry)
 	Chunks int    `json:"chunks,omitempty"` // >0 means the attachment was chunked
+}
+
+// Attachment is one file to send along with a message: inline (base64 in the message)
+// when it fits a2a.MaxArtifactBytes, otherwise the message becomes the chunk announcement
+// and the bytes follow as artifact_chunk messages. It is also kept locally under
+// ArtifactPath so the sender's own UI can offer it for download.
+type Attachment struct {
+	Name string
+	Raw  []byte
+}
+
+// MessageOptions are the optional parts of one SendMessage.
+type MessageOptions struct {
+	// Attachment is an in-memory file to send with the message ("" name = none).
+	Attachment *Attachment
+	// File is the path of a local file to attach instead of Attachment (validated and
+	// read with LoadSendFile).
+	File string
+	// Archive appends the message to the local conversation with the peer (Dir=out,
+	// Status sent|queued, base64 stripped) and reports its Seq. Handshake and control
+	// messages are sent without it.
+	Archive bool
+	// SessionID is stored with the archived copy (the host's session record for the
+	// turn that produced this message).
+	SessionID string
+}
+
+// SendMessage sends one arbitrary pairwise message (any inner type, including types only
+// the host understands) to a card: it completes From / To / ID / TS (and ConvID when
+// archiving), runs BeforeSend, seals, delivers or queues, runs AfterSend, optionally
+// attaches a file and optionally archives. Returns the result plus:
+//   - nil            — delivered;
+//   - ErrQueued      — parked in the outbox (res.Status == "queued", res still valid);
+//   - any other error — nothing was sent (bad file, no identity, cannot even queue).
+//
+// The receiver need not be a friend (a card is enough); friendship rules are the
+// receiver's business.
+func (n *Peer) SendMessage(ctx context.Context, to *a2a.Card, msg *a2a.Message, opts MessageOptions) (*SendResult, error) {
+	if !n.HasIdentity() {
+		return nil, ErrNoIdentity
+	}
+	if to == nil || msg == nil {
+		return nil, fmt.Errorf("%w: card and message are required", ErrBadCard)
+	}
+	toFp, err := to.Fingerprint()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadCard, err)
+	}
+	ctx = ctxOrBackground(ctx)
+	att := opts.Attachment
+	if strings.TrimSpace(opts.File) != "" {
+		name, raw, err := LoadSendFile(opts.File, MaxSendFileBytes)
+		if err != nil {
+			return nil, err
+		}
+		att = &Attachment{Name: name, Raw: raw}
+	}
+	n.completeMessage(toFp, msg)
+	if opts.Archive && msg.ConvID == "" {
+		msg.ConvID = a2a.ConvID(msg.From, toFp)
+	}
+	res := &SendResult{ID: msg.ID, Status: "sent"}
+	var sendErr error
+	switch {
+	case att != nil && len(att.Raw) > 0 && a2a.ShouldChunk(len(att.Raw)):
+		res.Chunks, sendErr = n.sendChunked(ctx, to, toFp, msg, att.Raw, att.Name)
+	default:
+		if att != nil && len(att.Raw) > 0 {
+			msg.ArtifactName = att.Name
+			msg.Artifact = base64.StdEncoding.EncodeToString(att.Raw)
+			n.PersistArtifactBytes(toFp, msg.ID, att.Name, att.Raw)
+		}
+		sendErr = n.sendMessage(ctx, to, msg)
+	}
+	if sendErr != nil {
+		if !errors.Is(sendErr, ErrQueued) {
+			return nil, sendErr
+		}
+		res.Status = "queued"
+	}
+	if opts.Archive {
+		stored := *msg
+		stored.Artifact = ""
+		seq, err := n.Convs.AppendSeq(toFp, &a2a.ConvEntry{Dir: "out", Message: stored, Status: res.Status, SessionID: opts.SessionID})
+		if err != nil {
+			return nil, err
+		}
+		res.Seq = seq
+	}
+	return res, sendErr
+}
+
+// completeMessage fills the identity fields a caller may leave empty: From (me), To, a
+// fresh ID and TS. A message with an empty From would be dropped by every receiver as
+// "not a friend" - a bug hosts have hit when sending status messages.
+func (n *Peer) completeMessage(toFp string, msg *a2a.Message) {
+	if msg.From == "" {
+		msg.From = n.Fingerprint()
+	}
+	if msg.To == "" {
+		msg.To = toFp
+	}
+	if msg.ID == "" {
+		msg.ID = n.newMsgID()
+	}
+	if msg.TS.IsZero() {
+		msg.TS = time.Now()
+	}
 }
 
 // SendOptions are the optional parts of one Send.
@@ -44,10 +159,10 @@ func (n *Peer) Send(ctx context.Context, to, body, filePath string) (*SendResult
 //   - Not a friend: ErrNotFriend (AddFriend first).
 //   - Attachment ≤ a2a.MaxArtifactBytes: base64 inline with the message; larger: this
 //     message becomes the "chunk announcement", followed by artifact_chunk messages.
-//   - Relay unreachable: queued in the outbox and re-sent by the Run loop; Status=queued.
+//   - Relay unreachable: queued in the outbox and re-sent by the Run loop; Status=queued
+//     (no error - the message is archived and will go out).
 //   - opts.Auto: the message (and its archived copy) carries the A2A `auto` flag.
 func (n *Peer) SendWith(ctx context.Context, to, body string, opts SendOptions) (*SendResult, error) {
-	filePath := opts.File
 	if !n.HasIdentity() {
 		return nil, ErrNoIdentity
 	}
@@ -55,50 +170,15 @@ func (n *Peer) SendWith(ctx context.Context, to, body string, opts SendOptions) 
 	if fr == nil || fr.Card == nil {
 		return nil, ErrNotFriend
 	}
-	ctx = ctxOrBackground(ctx)
 	body = strings.TrimSpace(body)
-	var (
-		artName string
-		artRaw  []byte
-	)
-	if strings.TrimSpace(filePath) != "" {
-		name, raw, err := loadSendFile(filePath, MaxSendFileBytes)
-		if err != nil {
-			return nil, err
-		}
-		artName, artRaw = name, raw
-	}
-	if body == "" && len(artRaw) == 0 {
+	if body == "" && strings.TrimSpace(opts.File) == "" {
 		return nil, fmt.Errorf("%w: body and attachment cannot both be empty", ErrBadFile)
 	}
-	me := n.Fingerprint()
-	msg := &a2a.Message{ID: n.newMsgID(), From: me, To: fr.Fingerprint,
-		ConvID: a2a.ConvID(me, fr.Fingerprint), TS: time.Now(), Type: a2a.TypeText, Body: body, Auto: opts.Auto}
-	res := &SendResult{ID: msg.ID, Status: "sent"}
-
-	if len(artRaw) > 0 && a2a.ShouldChunk(len(artRaw)) {
-		chunks, err := n.sendChunked(ctx, fr, msg, artRaw, artName)
-		res.Chunks = chunks
-		if err != nil {
-			res.Status = "queued"
-		}
-	} else {
-		if len(artRaw) > 0 {
-			msg.ArtifactName = artName
-			msg.Artifact = base64.StdEncoding.EncodeToString(artRaw)
-			n.PersistArtifactBytes(fr.Fingerprint, msg.ID, artName, artRaw)
-		}
-		if err := n.sendMessage(ctx, fr.Card, msg); err != nil {
-			res.Status = "queued"
-		}
-	}
-	stored := *msg
-	stored.Artifact = ""
-	seq, err := n.Convs.AppendSeq(fr.Fingerprint, &a2a.ConvEntry{Dir: "out", Message: stored, Status: res.Status})
-	if err != nil {
+	msg := &a2a.Message{Type: a2a.TypeText, Body: body, Auto: opts.Auto}
+	res, err := n.SendMessage(ctx, fr.Card, msg, MessageOptions{File: opts.File, Archive: true})
+	if err != nil && !errors.Is(err, ErrQueued) {
 		return nil, err
 	}
-	res.Seq = seq
 	return res, nil
 }
 
@@ -125,10 +205,10 @@ func (n *Peer) Typing(ctx context.Context, to string, on bool) error {
 	return n.DeliverToCard(ctxOrBackground(ctx), fr.Card, env)
 }
 
-// sendChunked sends a large file in chunks: the announcement (this text message carries
-// the metadata, no bytes) + N artifact_chunk messages; the whole file is also kept locally.
-// Returns the chunk count; any delivery failure returns an error (that message is queued).
-func (n *Peer) sendChunked(ctx context.Context, fr *a2a.Friend, announce *a2a.Message, raw []byte, name string) (int, error) {
+// sendChunked sends a large file in chunks: the announcement (this message carries the
+// metadata, no bytes) + N artifact_chunk messages; the whole file is also kept locally.
+// Returns the chunk count; the first delivery failure is returned (that message is queued).
+func (n *Peer) sendChunked(ctx context.Context, to *a2a.Card, toFp string, announce *a2a.Message, raw []byte, name string) (int, error) {
 	artifactID := a2a.NewArtifactID()
 	chunks := a2a.SplitChunks(raw)
 	total := len(chunks)
@@ -141,9 +221,9 @@ func (n *Peer) sendChunked(ctx context.Context, fr *a2a.Friend, announce *a2a.Me
 	announce.ArtifactSHA = sha
 	announce.ArtifactSize = size
 	announce.Artifact = ""
-	n.PersistArtifactBytes(fr.Fingerprint, artifactID, name, raw)
+	n.PersistArtifactBytes(toFp, artifactID, name, raw)
 
-	firstErr := n.sendMessage(ctx, fr.Card, announce)
+	firstErr := n.sendMessage(ctx, to, announce)
 	for i, c := range chunks {
 		chunk := &a2a.Message{
 			ID: n.newMsgID(), From: announce.From, To: announce.To, TS: time.Now(),
@@ -156,17 +236,24 @@ func (n *Peer) sendChunked(ctx context.Context, fr *a2a.Friend, announce *a2a.Me
 			ArtifactSize: size,
 			Artifact:     base64.StdEncoding.EncodeToString(c),
 		}
-		if err := n.sendMessage(ctx, fr.Card, chunk); err != nil && firstErr == nil {
+		if err := n.sendMessage(ctx, to, chunk); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	n.logf("large file %s sent to %s in %d chunks (%d KB)", name, a2a.ShortFp(fr.Fingerprint), total, size/1024)
+	n.logf("large file %s sent to %s in %d chunks (%d KB)", name, a2a.ShortFp(toFp), total, size/1024)
 	return total, firstErr
 }
 
-// sendMessage encrypts and delivers to the relays declared in the peer's card; on failure
-// the envelope is queued in the outbox and the error is returned (callers mark "queued").
+// sendMessage is the single pairwise send path: complete identity fields → BeforeSend →
+// seal (the handshake rule, from_xpub on friend_request / friend_accept, lives in
+// a2a.SealEnvelope) → deliver to the relays in the card → on failure park the envelope
+// in the outbox and return ErrQueued → AfterSend.
 func (n *Peer) sendMessage(ctx context.Context, toCard *a2a.Card, msg *a2a.Message) error {
+	toFp, _ := toCard.Fingerprint()
+	n.completeMessage(toFp, msg)
+	if n.BeforeSend != nil {
+		n.BeforeSend(toCard, msg)
+	}
 	env, err := n.seal(toCard, msg)
 	if err != nil {
 		return err
@@ -176,10 +263,14 @@ func (n *Peer) sendMessage(ctx context.Context, toCard *a2a.Card, msg *a2a.Messa
 		if qerr := n.queueOutbox(toCard, env); qerr != nil {
 			return fmt.Errorf("delivery failed and could not be queued: %v / %v", err, qerr)
 		}
-		return err
+		if n.AfterSend != nil {
+			n.AfterSend(toCard, msg, true)
+		}
+		return fmt.Errorf("%w: %v", ErrQueued, err)
 	}
-	if fp, ferr := toCard.Fingerprint(); ferr == nil {
-		n.logf("<<< mail to=%s type=%s id=%s", a2a.ShortFp(fp), msg.Type, msg.ID)
+	n.logf("<<< mail to=%s type=%s id=%s", a2a.ShortFp(toFp), msg.Type, msg.ID)
+	if n.AfterSend != nil {
+		n.AfterSend(toCard, msg, false)
 	}
 	return nil
 }
@@ -247,6 +338,7 @@ func (n *Peer) flushOutbox(ctx context.Context) int {
 		}
 		_ = a2a.RemoveOutbox(n.outboxDir(), e.Name)
 		sent++
+		n.heartbeat(HeartbeatProgress)
 	}
 	if sent > 0 {
 		n.logf("outbox: re-sent %d queued envelope(s)", sent)
@@ -299,10 +391,10 @@ func (n *Peer) PersistArtifactBytes(peer, key, name string, raw []byte) string {
 	return p
 }
 
-// loadSendFile validates and reads the attachment to send: exists, non-empty, regular
-// file, within limit, file name without path separators. Every failure wraps ErrBadFile
-// (size overflow additionally wraps ErrArtifactSize).
-func loadSendFile(path string, limit int64) (name string, raw []byte, err error) {
+// LoadSendFile validates and reads an attachment to send: exists, non-empty, regular
+// file, within limit bytes, file name without path separators. Every failure wraps
+// ErrBadFile (size overflow additionally wraps ErrArtifactSize).
+func LoadSendFile(path string, limit int64) (name string, raw []byte, err error) {
 	info, serr := os.Stat(path)
 	if serr != nil {
 		return "", nil, fmt.Errorf("%w: not readable: %v", ErrBadFile, serr)
