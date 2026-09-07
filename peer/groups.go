@@ -1872,8 +1872,8 @@ func (n *Peer) GroupApply(ctx context.Context, groupURI, note string, payment *a
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrBadCard, err)
 	}
-	if n.Groups.Get(gid) != nil {
-		return gid, nil // already a member
+	if n.Groups.Get(gid) != nil && !n.GroupLeft(gid) {
+		return gid, nil // already a member (a removed member still holds the archive - let them re-apply)
 	}
 	ctx = ctxOrBackground(ctx)
 	card, err := n.groupRelayClient(relayURL).FetchGroupCard(ctx, gid)

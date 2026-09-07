@@ -574,3 +574,87 @@ func TestAppliedMarkerIsOwnerBoundAndExpires(t *testing.T) {
 		t.Fatal("cleared marker must not whitelist")
 	}
 }
+
+// TestGroupRemovedMemberReappliesViaLink: a member the owner removed still holds the
+// group locally (read-only archive). That archive must not make GroupApply believe
+// they are "already a member" - the application has to go out, land on the owner's
+// desk, and an approval re-admits them into the same conversation.
+func TestGroupRemovedMemberReappliesViaLink(t *testing.T) {
+	relayURL := startRelay(t)
+	alice := newTestNode(t, relayURL, "alice")
+	bob := newTestNode(t, relayURL, "bob")
+	befriend(t, alice, bob)
+	bLog := recordEvents(bob)
+	ctx := context.Background()
+
+	prof := a2a.DefaultGroupProfile()
+	prof.Join = a2a.JoinApply
+	prof.Public = true
+	view, err := alice.GroupCreate(ctx, "reapply club", []string{bob.Fingerprint()}, prof)
+	if err != nil {
+		t.Fatalf("GroupCreate: %v", err)
+	}
+	gid := view.GID
+	uri := a2a.EncodeGroupURI(gid, relayURL, "reapply club")
+	waitUntil(t, "bob joins", func() bool {
+		return bLog.has(func(e Event) bool {
+			return e.Kind == EventGroupUpdated && e.GID == gid && e.Reason == GroupReasonJoined
+		})
+	})
+	sendAndExpect(t, gid, "before-kick", alice, bob)
+
+	// A member in good standing applying again is a no-op (idempotent, nothing sent).
+	if got, err := bob.GroupApply(ctx, uri, "again?", nil); err != nil || got != gid {
+		t.Fatalf("member GroupApply: %q %v", got, err)
+	}
+	if apps, _ := alice.GroupApplications(gid); len(apps) != 0 {
+		t.Fatalf("a current member must not produce an application: %+v", apps)
+	}
+
+	if err := alice.GroupKick(ctx, gid, bob.Fingerprint()); err != nil {
+		t.Fatalf("GroupKick: %v", err)
+	}
+	waitUntil(t, "bob marked as removed", func() bool { return bob.GroupLeft(gid) })
+
+	// The removed member re-applies through the group link: the application must reach the owner.
+	if got, err := bob.GroupApply(ctx, uri, "let me back in", nil); err != nil || got != gid {
+		t.Fatalf("removed member GroupApply: %q %v", got, err)
+	}
+	if !bob.GroupApplied(gid) {
+		t.Fatal("removed member's application must be marked as applied")
+	}
+	appEv := alice.await(t, "application lands on the owner", func(e Event) bool {
+		return e.Kind == EventGroupApplication && e.GID == gid && e.Peer == bob.Fingerprint()
+	})
+	if appEv.Message == nil || appEv.Message.Body != "let me back in" {
+		t.Fatalf("application event: %+v", appEv)
+	}
+	apps, err := alice.GroupApplications(gid)
+	if err != nil || len(apps) != 1 || apps[0].Fp != bob.Fingerprint() {
+		t.Fatalf("owner applications: %+v %v", apps, err)
+	}
+
+	// Approval re-admits into the same conversation: marker cleared, history intact.
+	if err := alice.GroupApprove(ctx, gid, bob.Fingerprint()); err != nil {
+		t.Fatalf("GroupApprove: %v", err)
+	}
+	waitUntil(t, "bob re-admitted (group.updated/rejoined)", func() bool {
+		return bLog.has(func(e Event) bool {
+			return e.Kind == EventGroupUpdated && e.GID == gid && e.Reason == GroupReasonRejoined
+		})
+	})
+	if bob.GroupLeft(gid) || bob.GroupApplied(gid) {
+		t.Fatal("re-admitted member must carry neither the removed marker nor a pending application")
+	}
+	if list := bob.GroupList(); len(list) != 1 || list[0].Left {
+		t.Fatalf("re-admitted member's list row must not carry left: %+v", list)
+	}
+	if !groupHas(bob.Peer, gid, "before-kick") {
+		t.Fatal("re-admitted member must keep its history")
+	}
+	if apps, _ := alice.GroupApplications(gid); len(apps) != 0 {
+		t.Fatalf("application not consumed: %+v", apps)
+	}
+	sendAndExpect(t, gid, "after-rejoin-bob", bob, alice)
+	sendAndExpect(t, gid, "after-rejoin-alice", alice, bob)
+}
