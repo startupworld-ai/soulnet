@@ -1507,6 +1507,34 @@ func (n *Peer) transientOrDrop(key string, err error) error {
 
 // handleGroupEnvelope processes one fan-out letter: verify the sender signature and
 // membership (never trust the relay), decrypt with the sender's chain, dedupe, archive.
+// dissolveWhileLeft handles the one fan-out a member holding the removed marker still
+// honours: the roster owner's group_dissolve. It opens the envelope with the sender key
+// kept in keys.json; when it is a dissolution, the marker's reason becomes "dissolved"
+// (a kick that raced ahead of the notice must not hide that the group is gone) and
+// group.updated / dissolved is raised. Anything else - not the owner, no key, another
+// type - is left to the caller (nothing is persisted: Keys() is a fresh copy).
+func (n *Peer) dissolveWhileLeft(st *a2a.GroupState, senderFp string, env *a2a.Envelope) bool {
+	gid := st.Roster.GroupID
+	if senderFp != st.Roster.OwnerFp() {
+		return false
+	}
+	n.gkMu.Lock()
+	rst := n.Groups.Keys(gid).Senders[senderFp]
+	var msg *a2a.Message
+	if rst != nil {
+		msg, _ = a2a.GroupOpen(rst, env.Cipher)
+	}
+	n.gkMu.Unlock()
+	if msg == nil || msg.Type != a2a.TypeGroupDissolve {
+		return false
+	}
+	if n.GroupLeftReason(gid) != "dissolved" {
+		n.markGroupLeft(gid, "dissolved")
+	}
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, Peer: senderFp, TS: time.Now(), Reason: GroupReasonDissolved, Message: msg})
+	return true
+}
+
 func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 	senderFp, err := env.VerifyGroupEnvelope()
 	if err != nil {
@@ -1523,9 +1551,14 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		return n.transientOrDrop("grp-env-"+gid, fmt.Errorf("group %s not joined yet", a2a.ShortFp(gid)))
 	}
 	if n.GroupLeft(gid) {
-		// A removed member gets no fan-out from the relay; one that arrives anyway most
-		// likely means "just re-admitted, the invite is still in flight" - wait for it
-		// like the not-joined case (the retry budget bounds a genuine stray).
+		// A removed member gets no fan-out from the relay; one that arrives anyway is
+		// either the owner's dissolution notice (a staged dissolution announces first and
+		// kicks legacy members right after, so the kick can land before the notice is
+		// processed - see GroupDissolveNotify) or "just re-admitted, the invite is still in
+		// flight" - wait for it like the not-joined case (the retry budget bounds a stray).
+		if n.dissolveWhileLeft(st, senderFp, env) {
+			return nil
+		}
 		return n.transientOrDrop("grp-env-"+gid, fmt.Errorf("group %s: not a member any more (waiting for a possible re-admission)", a2a.ShortFp(gid)))
 	}
 	if st.Roster.Member(senderFp) == nil {
