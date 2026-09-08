@@ -61,6 +61,12 @@ func TestGroupDissolve(t *testing.T) {
 		if !m.GroupLeft(gid) || m.Groups.Get(gid) == nil {
 			t.Fatalf("%s: group should stay on disk read-only", a2a.ShortFp(m.Fingerprint()))
 		}
+		if got := m.GroupLeftReason(gid); got != "dissolved" {
+			t.Fatalf("%s: GroupLeftReason = %q, want dissolved", a2a.ShortFp(m.Fingerprint()), got)
+		}
+		if rows := m.GroupList(); len(rows) != 1 || !rows[0].Left || rows[0].LeftReason != "dissolved" {
+			t.Fatalf("%s: list row should carry left + left_reason=dissolved, got %+v", a2a.ShortFp(m.Fingerprint()), rows)
+		}
 		if got := len(m.GroupConversation(gid, 0, 0)); got != 1 {
 			t.Fatalf("%s: archive should keep the 1 message, got %d", a2a.ShortFp(m.Fingerprint()), got)
 		}

@@ -69,6 +69,9 @@ type GroupSummary struct {
 	// Left: the owner removed me. The group is kept read-only on this node (history
 	// intact, no sending, no new mail); it flips back when the owner re-admits me.
 	Left bool `json:"left,omitempty"`
+	// LeftReason says why Left is set: "removed" (kicked) or "dissolved" (the owner
+	// ended the group), so UIs can word the read-only state right. Empty when not Left.
+	LeftReason string `json:"left_reason,omitempty"`
 }
 
 // GroupMemberView is one member row (fp + display name off the roster card).
@@ -130,8 +133,8 @@ func (n *Peer) GroupSummaryOf(st *a2a.GroupState) GroupSummary {
 	count, last, unread := n.Convs.Summary(a2a.GroupConvKey(gid), st.LastReadAt)
 	s := GroupSummary{GID: gid, Name: st.Roster.Name, OwnerFp: st.Roster.OwnerFp(),
 		Mine: st.Roster.OwnerFp() == n.Fingerprint(), Version: st.Roster.Version,
-		Members: len(st.Roster.Members), Unread: unread, Count: count, Profile: st.Roster.Profile,
-		Left: n.GroupLeft(gid)}
+		Members: len(st.Roster.Members), Unread: unread, Count: count, Profile: st.Roster.Profile}
+	s.Left, s.LeftReason = n.groupLeftMark(gid)
 	if last != nil {
 		s.LastTs = last.TS.UnixMilli()
 		s.LastBody = last.Body
@@ -1075,20 +1078,11 @@ func (n *Peer) GroupLeave(ctx context.Context, gid string) error {
 // the group locally (my archive is kept too). Members do not need to be kicked one by
 // one and nobody rekeys — the group simply stops existing. Irreversible.
 func (n *Peer) GroupDissolve(ctx context.Context, gid string) error {
-	st := n.Groups.Get(gid)
-	if st == nil {
-		return ErrNoGroup
-	}
-	me := n.Fingerprint()
-	if st.Roster.OwnerFp() != me {
-		return fmt.Errorf("%w: only the owner can dissolve a group", ErrGroupOwner)
+	st, err := n.GroupDissolveNotify(ctx, gid)
+	if err != nil {
+		return err
 	}
 	ctx = ctxOrBackground(ctx)
-	msg := &a2a.Message{ID: n.newMsgID(), From: me, TS: time.Now(),
-		Type: a2a.TypeGroupDissolve, GID: gid, Body: st.Roster.Name}
-	if err := n.fanOutGroup(ctx, st, msg); err != nil {
-		return fmt.Errorf("%w: announcing the dissolution: %v", ErrNetwork, err)
-	}
 	// Best effort: a roster left behind is harmless (nobody can post to a group whose
 	// members all hold the dissolved marker), but a public card would keep showing up in
 	// search until unpublished.
@@ -1100,6 +1094,31 @@ func (n *Peer) GroupDissolve(ctx context.Context, gid string) error {
 	}
 	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonLeft})
 	return nil
+}
+
+// GroupDissolveNotify is the first step of GroupDissolve on its own: the owner check and
+// the group_dissolve fan-out to the current roster, nothing else (the roster stays on the
+// relay, the group stays local). A host whose members run mixed versions uses it to stage
+// a dissolution: announce first while everybody is still on the roster (nodes that know
+// the message freeze the group as "dissolved"), then kick the legacy members one by one
+// (their nodes freeze it as "removed" — a node already marked "dissolved" keeps that
+// reason), then finish with GroupDissolve. Returns the group state the notice went to.
+func (n *Peer) GroupDissolveNotify(ctx context.Context, gid string) (*a2a.GroupState, error) {
+	st := n.Groups.Get(gid)
+	if st == nil {
+		return nil, ErrNoGroup
+	}
+	me := n.Fingerprint()
+	if st.Roster.OwnerFp() != me {
+		return nil, fmt.Errorf("%w: only the owner can dissolve a group", ErrGroupOwner)
+	}
+	ctx = ctxOrBackground(ctx)
+	msg := &a2a.Message{ID: n.newMsgID(), From: me, TS: time.Now(),
+		Type: a2a.TypeGroupDissolve, GID: gid, Body: st.Roster.Name}
+	if err := n.fanOutGroup(ctx, st, msg); err != nil {
+		return nil, fmt.Errorf("%w: announcing the dissolution: %v", ErrNetwork, err)
+	}
+	return st, nil
 }
 
 // GroupKick removes a member. The owner republishes the roster without them (every
@@ -1412,7 +1431,7 @@ func (n *Peer) applyRoster(ctx context.Context, st *a2a.GroupState, next *a2a.Gr
 
 type groupLeftMark struct {
 	TS     time.Time `json:"ts"`
-	Reason string    `json:"reason,omitempty"` // "removed"
+	Reason string    `json:"reason,omitempty"` // "removed" | "dissolved"
 }
 
 func (n *Peer) leftPath(gid string) string {
@@ -1425,6 +1444,27 @@ func (n *Peer) leftPath(gid string) string {
 func (n *Peer) GroupLeft(gid string) bool {
 	_, err := os.Stat(n.leftPath(gid))
 	return err == nil
+}
+
+// GroupLeftReason reports why gid is read-only on this node: "removed" (the owner kicked
+// me), "dissolved" (the owner ended the group), or "" when I am still a member. A marker
+// written before reasons existed reads as "removed".
+func (n *Peer) GroupLeftReason(gid string) string {
+	_, reason := n.groupLeftMark(gid)
+	return reason
+}
+
+// groupLeftMark reads the marker: (present, reason).
+func (n *Peer) groupLeftMark(gid string) (bool, string) {
+	raw, err := os.ReadFile(n.leftPath(gid))
+	if err != nil {
+		return false, ""
+	}
+	var m groupLeftMark
+	if json.Unmarshal(raw, &m) != nil || m.Reason == "" {
+		return true, "removed"
+	}
+	return true, m.Reason
 }
 
 // markGroupLeft writes the marker (idempotent; a group directory that does not exist is
