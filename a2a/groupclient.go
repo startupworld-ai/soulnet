@@ -65,6 +65,28 @@ func (c *ProxyClient) FetchGroup(ctx context.Context, gid string) (*GroupRoster,
 	return out.Roster, nil
 }
 
+// UnpublishGroup takes a roster off the relay (POST /group/unpublish, signed request; the
+// relay only honours the roster owner). Used by GroupDissolve.
+func (c *ProxyClient) UnpublishGroup(ctx context.Context, gid string) error {
+	req, err := http.NewRequestWithContext(ctx, "POST",
+		c.Base+"/group/unpublish?gid="+url.QueryEscape(gid), nil)
+	if err != nil {
+		return err
+	}
+	if err := c.signGet(req, "POST", "/group/unpublish"); err != nil {
+		return err
+	}
+	resp, err := c.shortHTTP().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return apiErr(resp)
+	}
+	return nil
+}
+
 // FetchGroupCard downloads the PUBLIC card of a group (GET /group/card, no auth) — what
 // a stranger holding a soulmirror://group?... handle uses to find where to apply.
 func (c *ProxyClient) FetchGroupCard(ctx context.Context, gid string) (*GroupCard, error) {

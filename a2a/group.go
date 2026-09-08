@@ -41,6 +41,11 @@ const (
 	TypeGroupKey    = "group_key"    // pairwise, member → member: carries the sender's chain key for one group (GKey field)
 	TypeGroupLeave  = "group_leave"  // pairwise, member → owner: "remove me from the roster" (body = optional note)
 	TypeGroupUpdate = "group_update" // fan-out, owner → group: "the roster changed, refetch it" (body = note; triggers rekey checks)
+	// TypeGroupDissolve is the owner's last word in a group: fan-out, owner → group, "this
+	// group is dissolved" (body = group name). Receivers freeze the group read-only (same
+	// on-disk state as a removal, reason "dissolved"); the owner then takes the roster off
+	// the relay and forgets the group locally. Only the roster owner may send it.
+	TypeGroupDissolve = "group_dissolve"
 )
 
 // MaxGroupMembers caps the roster size (fan-out cost is linear; raise deliberately).

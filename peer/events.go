@@ -25,14 +25,15 @@ const (
 // group" can ignore them; hosts that hang product behaviour on membership transitions
 // (announce my seat agents on join, stop composing when removed, …) branch on them.
 const (
-	GroupReasonCreated  = "created"  // GroupCreate succeeded on this node
-	GroupReasonJoined   = "joined"   // an invite landed and I joined a group I did not hold
-	GroupReasonRejoined = "rejoined" // the owner re-admitted me after a removal (same conversation continues)
-	GroupReasonRoster   = "roster"   // membership / governance profile changed (Added / Removed list the fingerprints)
-	GroupReasonRemoved  = "removed"  // I was removed: the group stays on disk read-only (Peer.GroupLeft)
-	GroupReasonLeft     = "left"     // I left the group, or deleted a removed group's local record
-	GroupReasonPins     = "pins"     // the pinned announcements changed
-	GroupReasonVoices   = "voices"   // a member announced its seat-agent names (Peer = who, Message = the announcement)
+	GroupReasonCreated   = "created"   // GroupCreate succeeded on this node
+	GroupReasonJoined    = "joined"    // an invite landed and I joined a group I did not hold
+	GroupReasonRejoined  = "rejoined"  // the owner re-admitted me after a removal (same conversation continues)
+	GroupReasonRoster    = "roster"    // membership / governance profile changed (Added / Removed list the fingerprints)
+	GroupReasonRemoved   = "removed"   // I was removed: the group stays on disk read-only (Peer.GroupLeft)
+	GroupReasonLeft      = "left"      // I left the group, or deleted a removed group's local record
+	GroupReasonDissolved = "dissolved" // the owner dissolved the group: it stays on disk read-only (Peer.GroupLeft), like removed
+	GroupReasonPins      = "pins"      // the pinned announcements changed
+	GroupReasonVoices    = "voices"    // a member announced its seat-agent names (Peer = who, Message = the announcement)
 )
 
 // Event is one notification produced by the receive loop. Fields are set per Kind.

@@ -283,6 +283,7 @@ func (s *Server) methods() map[string]handler {
 		"group.markRead":          s.groupMarkRead,
 		"group.leave":             s.groupLeave,
 		"group.kick":              s.groupKick,
+		"group.dissolve":          s.groupDissolve,
 		"group.setProfile":        s.groupSetProfile,
 		"group.pin":               s.groupPin,
 		"group.unpin":             s.groupUnpin,

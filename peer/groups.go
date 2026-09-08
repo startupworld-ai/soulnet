@@ -1070,6 +1070,38 @@ func (n *Peer) GroupLeave(ctx context.Context, gid string) error {
 	return nil
 }
 
+// GroupDissolve ends a group I own: fan out group_dissolve so every member freezes it
+// read-only (archive kept, reason "dissolved"), take the roster off the relay, then forget
+// the group locally (my archive is kept too). Members do not need to be kicked one by
+// one and nobody rekeys — the group simply stops existing. Irreversible.
+func (n *Peer) GroupDissolve(ctx context.Context, gid string) error {
+	st := n.Groups.Get(gid)
+	if st == nil {
+		return ErrNoGroup
+	}
+	me := n.Fingerprint()
+	if st.Roster.OwnerFp() != me {
+		return fmt.Errorf("%w: only the owner can dissolve a group", ErrGroupOwner)
+	}
+	ctx = ctxOrBackground(ctx)
+	msg := &a2a.Message{ID: n.newMsgID(), From: me, TS: time.Now(),
+		Type: a2a.TypeGroupDissolve, GID: gid, Body: st.Roster.Name}
+	if err := n.fanOutGroup(ctx, st, msg); err != nil {
+		return fmt.Errorf("%w: announcing the dissolution: %v", ErrNetwork, err)
+	}
+	// Best effort: a roster left behind is harmless (nobody can post to a group whose
+	// members all hold the dissolved marker), but a public card would keep showing up in
+	// search until unpublished.
+	if err := n.groupRelayClient(st.Roster.Relay).UnpublishGroup(ctx, gid); err != nil {
+		n.logf("group %s: unpublish after dissolve failed: %v", a2a.ShortFp(gid), err)
+	}
+	if err := n.Groups.Remove(gid); err != nil {
+		return err
+	}
+	n.emit(Event{Kind: EventGroupUpdated, GID: gid, TS: time.Now(), Reason: GroupReasonLeft})
+	return nil
+}
+
 // GroupKick removes a member. The owner republishes the roster without them (every
 // remaining member rekeys); an admin (per the roster profile) forwards a `group_admin`
 // kick request to the owner, whose node executes it mechanically; anyone else is refused.
@@ -1518,6 +1550,16 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		return nil
 	case a2a.TypeGroupPin:
 		return n.applyGroupPin(st, senderFp, msg)
+	case a2a.TypeGroupDissolve:
+		// Only the roster owner can dissolve. The group stays on disk read-only — same
+		// state as being removed, so hosts reuse their "removed" UI — with reason
+		// "dissolved" so they can word it right.
+		if senderFp != st.Roster.OwnerFp() {
+			return permanent(fmt.Errorf("group_dissolve from a non-owner"))
+		}
+		n.markGroupLeft(gid, "dissolved")
+		n.emit(Event{Kind: EventGroupUpdated, GID: gid, Peer: senderFp, TS: time.Now(), Reason: GroupReasonDissolved, Message: msg})
+		return nil
 	case a2a.TypeGroupVoices:
 		// Seat roster metadata: which agent names that member's composer answers to.
 		// Not speech (AllowSpeak does not apply), never archived; the update event

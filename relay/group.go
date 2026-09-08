@@ -19,8 +19,9 @@ import (
 
 // Group event kinds (on top of the core kinds in ext.go).
 const (
-	EventGroupPublished = "group.published" // FP = owner fingerprint; Data["gid"], Data["version"]
-	EventGroupMail      = "group.mail"      // FP = sender fingerprint; Data["gid"], Data["delivered"]
+	EventGroupPublished   = "group.published"   // FP = owner fingerprint; Data["gid"], Data["version"]
+	EventGroupMail        = "group.mail"        // FP = sender fingerprint; Data["gid"], Data["delivered"]
+	EventGroupUnpublished = "group.unpublished" // FP = owner fingerprint; Data["gid"] (owner dissolved the group)
 )
 
 const maxRosterBytes = 256 << 10 // 256KB: 128 members x ~1KB card, with headroom
@@ -52,6 +53,41 @@ func (s *Server) mountGroups(must func(error)) {
 	must(s.HandleFunc("POST /group/mail", s.groupMail))
 	must(s.HandleFunc("GET /group/card", s.groupCard))
 	must(s.HandleFunc("GET /group/search", s.groupSearch))
+	must(s.HandleFunc("POST /group/unpublish", s.groupUnpublish))
+}
+
+// groupUnpublish removes a stored roster (the owner dissolved the group). Authorization is
+// the request signature: the signer must be the roster owner — a member or a bystander
+// cannot take a group down. Unknown groups answer 404 (a retry after success is harmless).
+func (s *Server) groupUnpublish(w http.ResponseWriter, r *http.Request) {
+	gid := r.URL.Query().Get("gid")
+	if !a2a.ValidGroupID(gid) {
+		WriteError(w, 400, "invalid gid")
+		return
+	}
+	fp, err := VerifyRequest(r, "POST", "/group/unpublish")
+	if err != nil {
+		WriteError(w, 401, err.Error())
+		return
+	}
+	s.grMu.Lock()
+	defer s.grMu.Unlock()
+	g := s.loadRoster(gid)
+	if g == nil {
+		WriteError(w, 404, "unknown group")
+		return
+	}
+	if g.OwnerFp() != fp {
+		WriteError(w, 403, "only the group owner can unpublish it")
+		return
+	}
+	if err := os.Remove(s.groupPath(gid)); err != nil && !os.IsNotExist(err) {
+		WriteError(w, 500, err.Error())
+		return
+	}
+	s.emit(Event{Kind: EventGroupUnpublished, FP: fp, Data: map[string]any{"gid": gid}})
+	log.Printf("[relay-debug] groupUnpublish gid=%s owner=%s", a2a.ShortFp(gid), a2a.ShortFp(fp))
+	WriteJSON(w, 200, map[string]any{"ok": true})
 }
 
 // groupCard returns the PUBLIC card of a group (no auth): only what the owner opted

@@ -167,6 +167,19 @@ func (s *Server) groupKick(ctx context.Context, params json.RawMessage) (any, er
 	return map[string]any{"ok": true}, s.n.GroupKick(ctx, p.GID, p.FP)
 }
 
+func (s *Server) groupDissolve(ctx context.Context, params json.RawMessage) (any, error) {
+	var p struct {
+		GID string `json:"gid"`
+	}
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	if p.GID == "" {
+		return nil, invalid("gid must not be empty")
+	}
+	return map[string]any{"ok": true}, s.n.GroupDissolve(ctx, p.GID)
+}
+
 func (s *Server) groupSetProfile(ctx context.Context, params json.RawMessage) (any, error) {
 	var p struct {
 		GID     string            `json:"gid"`
