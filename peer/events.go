@@ -19,7 +19,15 @@ const (
 	EventGroupTyping      = "group.typing"      // a member's seat is working in the group (Agent = which of their agents; not archived)
 	EventGroupUpdated     = "group.updated"     // joined / roster changed / pins changed / left one group (GID)
 	EventGroupApplication = "group.application" // a stranger applied to join a group I own (GID, Peer = applicant, Message = the group_join)
+	EventKicked           = "device.kicked"     // the relay refused this device: another device of this identity is active (Kicked); the receive loop has stopped
 )
+
+// KickedInfo describes the device that holds the mailbox (device.kicked).
+type KickedInfo struct {
+	ActiveDevice string    `json:"active_device"`
+	ActiveName   string    `json:"active_name,omitempty"`
+	Since        time.Time `json:"since"`
+}
 
 // Reasons carried by group.updated (Event.Reason). Hosts that only need "refetch the
 // group" can ignore them; hosts that hang product behaviour on membership transitions
@@ -75,4 +83,7 @@ type Event struct {
 	// entered / left the roster in this update (sorted; either may be empty).
 	Added   []string `json:"added,omitempty"`
 	Removed []string `json:"removed,omitempty"`
+
+	// Kicked: on device.kicked the device that holds the mailbox now.
+	Kicked *KickedInfo `json:"kicked,omitempty"`
 }

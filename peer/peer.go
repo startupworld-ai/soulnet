@@ -20,6 +20,7 @@ package peer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -77,6 +78,15 @@ type Peer struct {
 	// OnHeartbeat is called by the Run loop with a Heartbeat* kind so a host can watch
 	// the loop's liveness (watchdog, health endpoint) without running a loop of its own.
 	OnHeartbeat func(kind string)
+
+	// DeviceID / DeviceName identify THIS device of the identity to the relay (device
+	// sessions: one identity on several machines, one active at a time). When DeviceID is
+	// set every mailbox-owner request carries it; the relay answers 409 kicked once another
+	// device of the same key is active, the Run loop then stops (ErrKicked, device.kicked
+	// event) instead of retrying, and ClaimActive takes the mailbox back. Empty = legacy
+	// behaviour, no header, existing hosts unchanged. Set them before Run.
+	DeviceID   string
+	DeviceName string
 
 	handlerMu sync.RWMutex
 	handlers  map[string]MessageHandler
@@ -289,7 +299,7 @@ func (n *Peer) proxyClient() *a2a.ProxyClient {
 	if id == nil {
 		return nil
 	}
-	return a2a.NewProxyClient(n.RelayBase(), id).WithDeliverTimeout(DeliverTimeout)
+	return a2a.NewProxyClient(n.RelayBase(), id).WithDeliverTimeout(DeliverTimeout).WithDevice(n.DeviceID, n.DeviceName)
 }
 
 func (n *Peer) logf(format string, args ...any) {
@@ -324,6 +334,23 @@ var (
 	ErrArtifactSize   = fmt.Errorf("attachment exceeds the size limit")
 	ErrNetwork        = fmt.Errorf("relay/directory request failed")
 )
+
+// ErrKicked is the relay's 409 verdict that another device of this identity is the
+// active one (see DeviceID). Test with errors.As on a *ErrKicked; the Run loop returns
+// it and emits device.kicked instead of retrying.
+type ErrKicked = a2a.ErrKicked
+
+// asKicked returns the *ErrKicked inside err, or nil.
+func asKicked(err error) *ErrKicked {
+	var k *ErrKicked
+	if errors.As(err, &k) {
+		return k
+	}
+	return nil
+}
+
+// IsKicked reports whether err carries the relay's kicked verdict.
+func IsKicked(err error) bool { return asKicked(err) != nil }
 
 // ——— helpers ———
 

@@ -35,6 +35,32 @@ type ProxyClient struct {
 	// Set it via WithDeliverTimeout. NewProxyClient leaves it nil so existing callers
 	// keep their exact behaviour.
 	ShortHTTP *http.Client
+
+	// Device / DeviceName identify this device of the identity to the relay (device
+	// sessions, see device.go): every mailbox-owner request (Poll / Ack / Deliver /
+	// DeliverGroup) carries HeaderDevice when Device is set. Empty = legacy behaviour, no
+	// header. Set them via WithDevice.
+	Device     string
+	DeviceName string
+}
+
+// WithDevice makes the client identify itself as device id (name is the human-readable
+// label the relay records on an implicit first claim). Returns c for chaining.
+func (c *ProxyClient) WithDevice(id, name string) *ProxyClient {
+	c.Device = strings.TrimSpace(id)
+	c.DeviceName = strings.TrimSpace(name)
+	return c
+}
+
+// setDevice adds the device headers to a mailbox-owner request (no-op without a device id).
+func (c *ProxyClient) setDevice(req *http.Request) {
+	if c.Device == "" {
+		return
+	}
+	req.Header.Set(HeaderDevice, c.Device)
+	if c.DeviceName != "" {
+		req.Header.Set(HeaderDeviceName, c.DeviceName)
+	}
 }
 
 // NewProxyClient creates a client for one relay. A trailing / on base is trimmed.
@@ -85,10 +111,17 @@ func (e *RelayError) Error() string {
 
 func apiErr(resp *http.Response) error {
 	var e struct {
-		Error string `json:"error"`
+		Error        string `json:"error"`
+		ActiveDevice string `json:"active_device"`
+		ActiveName   string `json:"active_name"`
+		Since        string `json:"since"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	_ = json.Unmarshal(raw, &e)
+	if resp.StatusCode == http.StatusConflict && e.Error == KickedErrorCode {
+		since, _ := time.Parse(time.RFC3339, e.Since)
+		return &ErrKicked{ActiveDevice: e.ActiveDevice, ActiveName: e.ActiveName, Since: since}
+	}
 	if e.Error == "" {
 		e.Error = strings.TrimSpace(string(raw))
 	}
@@ -103,6 +136,7 @@ func (c *ProxyClient) Deliver(ctx context.Context, env *Envelope) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setDevice(req) // sending AS this identity is gated on the active device
 	resp, err := c.shortHTTP().Do(req)
 	if err != nil {
 		return err
@@ -145,6 +179,7 @@ func (c *ProxyClient) Poll(ctx context.Context, waitSec int) ([]MailItem, error)
 	if err := c.signGet(req, "GET", "/mail"); err != nil {
 		return nil, err
 	}
+	c.setDevice(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -176,6 +211,7 @@ func (c *ProxyClient) Ack(ctx context.Context, ackIDs []string) error {
 	if err := c.signGet(req, "POST", "/mail/ack"); err != nil {
 		return err
 	}
+	c.setDevice(req)
 	resp, err := c.shortHTTP().Do(req)
 	if err != nil {
 		return err

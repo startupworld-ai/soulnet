@@ -123,6 +123,7 @@ func (c *ProxyClient) DeliverGroup(ctx context.Context, env *Envelope) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.setDevice(req) // posting AS this identity is gated on the active device, like Deliver
 	resp, err := c.shortHTTP().Do(req)
 	if err != nil {
 		return err

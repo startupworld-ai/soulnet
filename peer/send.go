@@ -259,6 +259,12 @@ func (n *Peer) sendMessage(ctx context.Context, toCard *a2a.Card, msg *a2a.Messa
 		return err
 	}
 	if err := n.DeliverToCard(ctx, toCard, env); err != nil {
+		if k := asKicked(err); k != nil {
+			// Another device is active for this identity: nothing may go out from here,
+			// not even later from the outbox. Nothing was sent, the host decides.
+			n.logf("delivery refused, another device is active (not queued): %v", k)
+			return k
+		}
 		n.logf("delivery failed (queued for retry): %v", err)
 		if qerr := n.queueOutbox(toCard, env); qerr != nil {
 			return fmt.Errorf("delivery failed and could not be queued: %v / %v", err, qerr)
@@ -291,13 +297,18 @@ func (n *Peer) seal(toCard *a2a.Card, msg *a2a.Message) (*a2a.Envelope, error) {
 const DeliverTimeout = a2a.DefaultDeliverTimeout
 
 // DeliverToCard tries each relay in the card in order (short DeliverTimeout per attempt).
-// Any failure is wrapped in ErrNetwork so the host can map it to its network error code.
+// Any failure is wrapped in ErrNetwork so the host can map it to its network error code --
+// except the relay's kicked verdict, returned as is (*ErrKicked): it is not a network
+// problem and no other relay would answer differently for this identity.
 func (n *Peer) DeliverToCard(ctx context.Context, card *a2a.Card, env *a2a.Envelope) error {
 	id := n.Identity()
 	var lastErr error
 	for _, proxy := range card.Proxies {
-		pc := a2a.NewProxyClient(proxy, id).WithDeliverTimeout(DeliverTimeout)
+		pc := a2a.NewProxyClient(proxy, id).WithDeliverTimeout(DeliverTimeout).WithDevice(n.DeviceID, n.DeviceName)
 		if err := pc.Deliver(ctx, env); err != nil {
+			if k := asKicked(err); k != nil {
+				return k
+			}
 			lastErr = err
 			continue
 		}
@@ -334,6 +345,9 @@ func (n *Peer) flushOutbox(ctx context.Context) int {
 			continue
 		}
 		if err := n.DeliverToCard(ctx, e.Item.Card, e.Item.Env); err != nil {
+			if k := asKicked(err); k != nil {
+				n.logf("outbox: paused, another device is active for this identity: %v", k)
+			}
 			return sent
 		}
 		_ = a2a.RemoveOutbox(n.outboxDir(), e.Name)

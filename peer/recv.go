@@ -94,6 +94,9 @@ func (n *Peer) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			if k := asKicked(err); k != nil {
+				return n.kicked(k)
+			}
 			n.logf("poll failed (%v), retrying in %s", err, backoff)
 			select {
 			case <-time.After(backoff):
@@ -142,6 +145,9 @@ func (n *Peer) Run(ctx context.Context) error {
 			n.logf("[recv-debug] acking %d item(s)", len(acks))
 		}
 		if err := pc.Ack(ctx, acks); err != nil && ctx.Err() == nil {
+			if k := asKicked(err); k != nil {
+				return n.kicked(k) // the other device will receive (and ack) these letters
+			}
 			n.logf("ack failed (redelivered next round, deduplicated idempotently): %v", err)
 		}
 		if hadTransient {
@@ -158,6 +164,16 @@ func (n *Peer) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// kicked ends the receive loop on the relay's kicked verdict: log, tell the host
+// (device.kicked) and hand the error back from Run. Retrying would only hammer the relay;
+// the host restarts the loop after ClaimActive (or when the user chooses this device).
+func (n *Peer) kicked(k *ErrKicked) error {
+	n.logf("receive loop stopped: %v", k)
+	n.emit(Event{Kind: EventKicked, TS: time.Now(), Kicked: &KickedInfo{
+		ActiveDevice: k.ActiveDevice, ActiveName: k.ActiveName, Since: k.Since}})
+	return k
 }
 
 // Running reports whether the receive loop is running.

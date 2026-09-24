@@ -35,6 +35,7 @@ const (
 	codeNetwork        = -32006 // relay / directory unreachable or returned an error
 	codeBadFile        = -32007 // attachment not readable / too large / empty
 	codeNoProfile      = -32008 // no capability profile yet
+	codeKicked         = -32009 // another device of this identity is active on the relay (device sessions)
 )
 
 type rpcRequest struct {
@@ -346,6 +347,8 @@ func toRPCError(err error) *rpcError {
 		code = codeBadFile
 	case errors.Is(err, peer.ErrIdentityExists):
 		code = codeIdentityExists
+	case peer.IsKicked(err):
+		code = codeKicked
 	case errors.Is(err, peer.ErrNetwork), strings.Contains(err.Error(), "connection"):
 		code = codeNetwork
 	}

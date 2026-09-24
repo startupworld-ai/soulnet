@@ -95,6 +95,7 @@ The `initialize` result carries the `methods` / `notifications` lists for capabi
 | `group.message` | `{gid, peer, seq, message}` | A group `text` was archived; `peer` = the member who spoke |
 | `group.updated` | `{gid, reason?, peer?, added?, removed?, message?}` | Something about one group changed — refetch `group.list` / `group.get`. `reason` says what: `created` / `joined` / `rejoined` (the owner re-admitted me, same conversation) / `roster` (`added[]` / `removed[]` = member fingerprints) / `removed` (I was removed; the group stays read-only, see `left`) / `dissolved` (the owner dissolved the group; it stays read-only like `removed`) / `left` / `pins` / `voices` (`peer` announced its seat agents; `message.voices` is the list, `message.body == "sync"` asks everyone to re-announce theirs) |
 | `group.application` | `{gid, peer, message}` | A stranger applied to join a group I own (join policy `apply`); `message.card` is the applicant's card, `message.body` the note — answer with `group.approve` / `group.applicationReject` |
+| `device.kicked` | `{kicked: {active_device, active_name?, since}}` | The relay refused this device because another device of the same identity is active; the receive loop has stopped. Only emitted when the Go API sets `Peer.DeviceID` (not exposed on the command line yet) |
 
 Every notification carries `kind` (= method name) and `ts`.
 
@@ -111,6 +112,7 @@ Every notification carries `kind` (= method name) and `ts`.
 | -32006 | Relay / directory unreachable or returned an error |
 | -32007 | Attachment not readable / empty / over 50MB |
 | -32008 | No capability profile yet |
+| -32009 | Another device of this identity is the active one on the relay (device sessions); this device must not touch the mailbox until it claims it again |
 
 Error `message` strings are English, machine-readable hints; hosts localize their own UI and should branch on `code`.
 

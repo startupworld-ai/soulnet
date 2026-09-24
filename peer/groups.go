@@ -408,7 +408,7 @@ func (n *Peer) GroupInvitable(gid, q string, offset, limit int) (*GroupMembersPa
 
 // groupRelayClient talks to the group's home relay.
 func (n *Peer) groupRelayClient(relay string) *a2a.ProxyClient {
-	return a2a.NewProxyClient(strings.TrimRight(relay, "/"), n.Identity()).WithDeliverTimeout(DeliverTimeout)
+	return a2a.NewProxyClient(strings.TrimRight(relay, "/"), n.Identity()).WithDeliverTimeout(DeliverTimeout).WithDevice(n.DeviceID, n.DeviceName)
 }
 
 // sendGroupPairwise seals a pairwise group_* message to an arbitrary card (members need
