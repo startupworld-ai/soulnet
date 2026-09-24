@@ -133,7 +133,7 @@ func (s *Server) rendezvousPut(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusConflict, "seq already stored")
 		return
 	}
-	if st.size+int64(len(raw)) > maxRendezvousTotal {
+	if st.size+int64(len(raw)) > s.rvMaxTotal {
 		WriteError(w, http.StatusRequestEntityTooLarge, "rendezvous exceeds 64 MB")
 		return
 	}

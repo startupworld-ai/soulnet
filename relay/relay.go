@@ -55,6 +55,7 @@ type Server struct {
 	rvMu       sync.Mutex
 	rendezvous map[string]*rvState
 	rvIdle     time.Duration // inactivity after which a rendezvous is dropped (default rendezvousIdle)
+	rvMaxTotal int64         // decoded bytes one rendezvous may hold (default maxRendezvousTotal)
 
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
@@ -95,6 +96,7 @@ func New(dataDir string) (*Server, error) {
 		active:     map[string]*a2a.ActiveDevice{},
 		rendezvous: map[string]*rvState{},
 		rvIdle:     rendezvousIdle,
+		rvMaxTotal: maxRendezvousTotal,
 	}
 	s.dir.afterPublish = func(fp string) { s.emit(Event{Kind: EventDirectoryPublished, FP: fp}) }
 	s.resetRendezvous()
