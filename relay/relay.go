@@ -51,6 +51,11 @@ type Server struct {
 	acMu   sync.Mutex
 	active map[string]*a2a.ActiveDevice
 
+	// rvMu guards rendezvous: pairing rendezvous id -> in-memory state (see rendezvous.go).
+	rvMu       sync.Mutex
+	rendezvous map[string]*rvState
+	rvIdle     time.Duration // inactivity after which a rendezvous is dropped (default rendezvousIdle)
+
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
 
@@ -87,9 +92,12 @@ func New(dataDir string) (*Server, error) {
 		routes:   map[string]bool{},
 		subs:     map[uint64]func(Event){},
 
-		active: map[string]*a2a.ActiveDevice{},
+		active:     map[string]*a2a.ActiveDevice{},
+		rendezvous: map[string]*rvState{},
+		rvIdle:     rendezvousIdle,
 	}
 	s.dir.afterPublish = func(fp string) { s.emit(Event{Kind: EventDirectoryPublished, FP: fp}) }
+	s.resetRendezvous()
 	s.mountCore()
 	return s, nil
 }
@@ -194,6 +202,7 @@ func (s *Server) mountCore() {
 	}))
 	s.mountGroups(must)
 	s.mountDevice(must)
+	s.mountRendezvous(must)
 	must(s.HandleFunc("POST /directory/publish", s.dir.handlePublish))
 	must(s.HandleFunc("POST /directory/unpublish", s.dir.handleUnpublish))
 	must(s.HandleFunc("GET /directory/query", s.dir.handleQuery))

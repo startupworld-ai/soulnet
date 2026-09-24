@@ -31,6 +31,13 @@ type ActiveDevice struct {
 	Since  time.Time `json:"since"`
 }
 
+// RendezvousItem is one blob stored at a pairing rendezvous (POST/GET /rendezvous/{id}).
+// Data is opaque ciphertext to the relay; JSON carries it base64 (standard encoding).
+type RendezvousItem struct {
+	Seq  int64  `json:"seq"`
+	Data []byte `json:"data"`
+}
+
 // ErrKicked is the relay's verdict that ANOTHER device of this identity is the active one
 // (HTTP 409 {"error":"kicked", ...}). The caller must stop touching the mailbox -- no retry
 // helps until the user claims the mailbox on this device again. Test with errors.As:
