@@ -47,6 +47,10 @@ type Server struct {
 	// grMu serializes group roster read-modify-write (publish version checks; see group.go).
 	grMu sync.Mutex
 
+	// acMu guards active: mailbox (fingerprint) -> its active device (nil cached = none; see active.go).
+	acMu   sync.Mutex
+	active map[string]*a2a.ActiveDevice
+
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
 
@@ -82,6 +86,8 @@ func New(dataDir string) (*Server, error) {
 		mux:      http.NewServeMux(),
 		routes:   map[string]bool{},
 		subs:     map[uint64]func(Event){},
+
+		active: map[string]*a2a.ActiveDevice{},
 	}
 	s.dir.afterPublish = func(fp string) { s.emit(Event{Kind: EventDirectoryPublished, FP: fp}) }
 	s.mountCore()
@@ -136,13 +142,18 @@ func (s *Server) deliver(env *a2a.Envelope) error {
 		return err
 	}
 	log.Printf("[relay-debug] deliver OK to=%s gid=%s file=%s bytes=%d", a2a.ShortFp(env.To), a2a.ShortFp(env.GID), name, len(raw))
+	s.wake(env.To)
+	return nil
+}
+
+// wake releases the long-poller of box (if any): new mail arrived or the active device changed.
+func (s *Server) wake(box string) {
 	s.wkMu.Lock()
-	if ch, ok := s.wakeup[env.To]; ok {
+	if ch, ok := s.wakeup[box]; ok {
 		close(ch)
-		delete(s.wakeup, env.To)
+		delete(s.wakeup, box)
 	}
 	s.wkMu.Unlock()
-	return nil
 }
 
 // --- rate limiting (abuse protection) ---
@@ -182,6 +193,7 @@ func (s *Server) mountCore() {
 		WriteJSON(w, 200, map[string]any{"ok": true, "service": "soulnet-relay", "v": 2})
 	}))
 	s.mountGroups(must)
+	s.mountDevice(must)
 	must(s.HandleFunc("POST /directory/publish", s.dir.handlePublish))
 	must(s.HandleFunc("POST /directory/unpublish", s.dir.handleUnpublish))
 	must(s.HandleFunc("GET /directory/query", s.dir.handleQuery))
@@ -258,6 +270,13 @@ func (s *Server) postMail(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 429, "sending too frequently")
 		return
 	}
+	// Sending AS an identity is a mailbox-owner action of the SENDER's box: only its active device may do it.
+	if from := senderBox(&env); from != "" {
+		if ad := s.deviceGate(r, from); ad != nil {
+			writeKicked(w, ad)
+			return
+		}
+	}
 	if err := s.deliver(&env); err != nil {
 		WriteError(w, 500, err.Error())
 		return
@@ -289,13 +308,24 @@ func (s *Server) getMail(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 401, err.Error())
 		return
 	}
+	if ad := s.deviceGate(r, box); ad != nil {
+		writeKicked(w, ad)
+		return
+	}
 	s.markSeen(box) // the owner of this mailbox is online right now (long-polling)
 	wait, _ := strconv.Atoi(r.URL.Query().Get("wait"))
 	if wait > 55 {
 		wait = 55
 	}
 	deadline := time.Now().Add(time.Duration(wait) * time.Second)
-	for {
+	for round := 0; ; round++ {
+		if round > 0 {
+			// Woken up (mail or takeover): a device that lost the mailbox while waiting must learn it now.
+			if ad := s.deviceGate(r, box); ad != nil {
+				writeKicked(w, ad)
+				return
+			}
+		}
 		items, err := s.readInbox(box)
 		if err != nil {
 			WriteError(w, 500, err.Error())
@@ -374,6 +404,10 @@ func (s *Server) ackMail(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.authBox(r, "POST", "/mail/ack", body.Box); err != nil {
 		WriteError(w, 401, err.Error())
+		return
+	}
+	if ad := s.deviceGate(r, body.Box); ad != nil {
+		writeKicked(w, ad)
 		return
 	}
 	dir := s.inboxDir(body.Box)

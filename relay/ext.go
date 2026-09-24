@@ -9,7 +9,7 @@
 //   - DataDir               where the core keeps its files; extensions put theirs under the same root
 //   - AdminOK / RequireAdmin the shared admin-token check (token set with SetAdminToken)
 //   - VerifyRequest         the A2A request-signature check (method+path+timestamp signed by the caller's key)
-//   - Subscribe             observe core events (directory.published, mail.delivered, mail.acked)
+//   - Subscribe             observe core events (directory.published, mail.delivered, mail.acked, box.active_changed, ...)
 //
 // Register routes and middlewares before the handler starts serving; event subscriptions may come and go at any time.
 package relay

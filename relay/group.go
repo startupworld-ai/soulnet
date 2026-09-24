@@ -274,6 +274,11 @@ func (s *Server) groupMail(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 403, "sender is not a member of this group")
 		return
 	}
+	// Posting AS the sender identity: only its active device may (same rule as POST /mail).
+	if ad := s.deviceGate(r, senderFp); ad != nil {
+		writeKicked(w, ad)
+		return
+	}
 	delivered := 0
 	var firstErr error
 	for _, fp := range g.MemberFps() {
