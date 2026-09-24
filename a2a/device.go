@@ -29,6 +29,12 @@ type ActiveDevice struct {
 	Device string    `json:"device"`
 	Name   string    `json:"name,omitempty"`
 	Since  time.Time `json:"since"`
+	// Handoff is an opaque blob (<= 4 KB) the claiming device leaves for the device it
+	// kicks: typically an encrypted "upload your latest state to rendezvous X with key K"
+	// note, so the previous device can hand its data over the moment it learns it was
+	// kicked. The relay stores and relays it verbatim (409 kicked carries it); it never
+	// interprets it. Empty when the claimer left nothing.
+	Handoff string `json:"handoff,omitempty"`
 }
 
 // RendezvousItem is one blob stored at a pairing rendezvous (POST/GET /rendezvous/{id}).
@@ -48,6 +54,9 @@ type ErrKicked struct {
 	ActiveDevice string
 	ActiveName   string
 	Since        time.Time
+	// Handoff is the claimer's opaque note (see ActiveDevice.Handoff); the kicked device
+	// uses it to hand its latest state over before freezing. Empty when none was left.
+	Handoff string
 }
 
 func (e *ErrKicked) Error() string {
@@ -61,3 +70,7 @@ func (e *ErrKicked) Error() string {
 // KickedErrorCode is the JSON "error" value of the relay's 409 kicked verdict:
 // {"error":"kicked","active_device":…,"active_name":…,"since":…}. Both ends key on it.
 const KickedErrorCode = "kicked"
+
+// MaxHandoffBytes caps ActiveDevice.Handoff (the claimer's opaque note to the kicked
+// device). 4 KB is plenty for "rendezvous id + wrapped key"; it is not a data channel.
+const MaxHandoffBytes = 4096

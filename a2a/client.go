@@ -115,12 +115,14 @@ func apiErr(resp *http.Response) error {
 		ActiveDevice string `json:"active_device"`
 		ActiveName   string `json:"active_name"`
 		Since        string `json:"since"`
+		Handoff      string `json:"handoff"`
 	}
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	// 4 KB handoff + the rest of the verdict: read up to 8 KB.
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	_ = json.Unmarshal(raw, &e)
 	if resp.StatusCode == http.StatusConflict && e.Error == KickedErrorCode {
 		since, _ := time.Parse(time.RFC3339, e.Since)
-		return &ErrKicked{ActiveDevice: e.ActiveDevice, ActiveName: e.ActiveName, Since: since}
+		return &ErrKicked{ActiveDevice: e.ActiveDevice, ActiveName: e.ActiveName, Since: since, Handoff: e.Handoff}
 	}
 	if e.Error == "" {
 		e.Error = strings.TrimSpace(string(raw))

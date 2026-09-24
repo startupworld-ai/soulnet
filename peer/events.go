@@ -27,6 +27,9 @@ type KickedInfo struct {
 	ActiveDevice string    `json:"active_device"`
 	ActiveName   string    `json:"active_name,omitempty"`
 	Since        time.Time `json:"since"`
+	// Handoff is the claimer's opaque note (a2a.ActiveDevice.Handoff): the host decrypts
+	// it and hands its latest state over before freezing. Empty when none was left.
+	Handoff string `json:"handoff,omitempty"`
 }
 
 // Reasons carried by group.updated (Event.Reason). Hosts that only need "refetch the

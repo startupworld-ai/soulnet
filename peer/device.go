@@ -17,7 +17,7 @@ import (
 // ClaimActive makes this device (DeviceID) the active device of our mailbox on our relay:
 // whatever device held it before is kicked at once. The host restarts Run afterwards if
 // the loop had stopped. Requires an identity and a DeviceID.
-func (n *Peer) ClaimActive(ctx context.Context) (*a2a.ActiveDevice, error) {
+func (n *Peer) ClaimActive(ctx context.Context, handoff string) (*a2a.ActiveDevice, error) {
 	if n.DeviceID == "" {
 		return nil, fmt.Errorf("ClaimActive: DeviceID is not set")
 	}
@@ -25,7 +25,7 @@ func (n *Peer) ClaimActive(ctx context.Context) (*a2a.ActiveDevice, error) {
 	if pc == nil {
 		return nil, ErrNoIdentity
 	}
-	ad, err := pc.ClaimActive(ctxOrBackground(ctx))
+	ad, err := pc.ClaimActive(ctxOrBackground(ctx), handoff)
 	if err != nil {
 		return nil, wrapNet(err)
 	}

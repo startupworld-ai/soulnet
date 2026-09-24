@@ -172,7 +172,7 @@ func (n *Peer) Run(ctx context.Context) error {
 func (n *Peer) kicked(k *ErrKicked) error {
 	n.logf("receive loop stopped: %v", k)
 	n.emit(Event{Kind: EventKicked, TS: time.Now(), Kicked: &KickedInfo{
-		ActiveDevice: k.ActiveDevice, ActiveName: k.ActiveName, Since: k.Since}})
+		ActiveDevice: k.ActiveDevice, ActiveName: k.ActiveName, Since: k.Since, Handoff: k.Handoff}})
 	return k
 }
 

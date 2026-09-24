@@ -16,14 +16,17 @@ import (
 // ClaimActive makes this client's Device the active device of our mailbox
 // (POST /box/active, owner-signed): whatever device held it before is kicked on its next
 // mailbox request (its long poll is woken at once). Requires WithDevice.
-func (c *ProxyClient) ClaimActive(ctx context.Context) (*ActiveDevice, error) {
+func (c *ProxyClient) ClaimActive(ctx context.Context, handoff string) (*ActiveDevice, error) {
 	if c.Device == "" {
 		return nil, fmt.Errorf("ClaimActive: no device id configured (WithDevice)")
 	}
 	if c.id == nil {
 		return nil, fmt.Errorf("ClaimActive: no identity")
 	}
-	body, _ := json.Marshal(map[string]any{"box": c.id.Fingerprint(), "device": c.Device, "name": c.DeviceName})
+	if len(handoff) > MaxHandoffBytes {
+		return nil, fmt.Errorf("ClaimActive: handoff exceeds %d bytes", MaxHandoffBytes)
+	}
+	body, _ := json.Marshal(map[string]any{"box": c.id.Fingerprint(), "device": c.Device, "name": c.DeviceName, "handoff": handoff})
 	req, err := http.NewRequestWithContext(ctx, "POST", c.Base+"/box/active", bytes.NewReader(body))
 	if err != nil {
 		return nil, err

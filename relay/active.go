@@ -99,13 +99,18 @@ func (s *Server) setActiveLocked(box string, ad a2a.ActiveDevice) (prev *a2a.Act
 // wakes the mailbox's long-poller (so the previous device gets its 409 now, not after its
 // current poll times out) and emits EventBoxActiveChanged. Claiming with the device that
 // is already active only refreshes the name and is not an event.
-func (s *Server) claimActive(box, device, name string) (*a2a.ActiveDevice, error) {
+func (s *Server) claimActive(box, device, name, handoff string) (*a2a.ActiveDevice, error) {
 	s.acMu.Lock()
 	cur := s.loadActiveLocked(box)
 	if cur != nil && cur.Device == device {
-		if cur.Name != name && name != "" {
+		// Re-claim by the holder: refresh the name and the handoff note (a new takeover
+		// attempt from the same device may carry a fresh rendezvous).
+		if (cur.Name != name && name != "") || cur.Handoff != handoff {
 			upd := *cur
-			upd.Name = name
+			if name != "" {
+				upd.Name = name
+			}
+			upd.Handoff = handoff
 			if _, err := s.setActiveLocked(box, upd); err != nil {
 				s.acMu.Unlock()
 				return nil, err
@@ -116,7 +121,7 @@ func (s *Server) claimActive(box, device, name string) (*a2a.ActiveDevice, error
 		s.acMu.Unlock()
 		return &cp, nil
 	}
-	ad := a2a.ActiveDevice{Device: device, Name: name, Since: time.Now().UTC()}
+	ad := a2a.ActiveDevice{Device: device, Name: name, Since: time.Now().UTC(), Handoff: handoff}
 	prev, err := s.setActiveLocked(box, ad)
 	s.acMu.Unlock()
 	if err != nil {
@@ -172,6 +177,7 @@ func writeKicked(w http.ResponseWriter, ad *a2a.ActiveDevice) {
 		"active_device": ad.Device,
 		"active_name":   ad.Name,
 		"since":         ad.Since.UTC().Format(time.RFC3339),
+		"handoff":       ad.Handoff, // opaque note from the claimer; empty when none
 	})
 }
 
@@ -193,12 +199,17 @@ func (s *Server) mountDevice(must func(error)) {
 // device the active device of box and kicks whatever device held it before.
 func (s *Server) boxActiveClaim(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Box    string `json:"box"`
-		Device string `json:"device"`
-		Name   string `json:"name"`
+		Box     string `json:"box"`
+		Device  string `json:"device"`
+		Name    string `json:"name"`
+		Handoff string `json:"handoff"` // opaque note for the kicked device, <= a2a.MaxHandoffBytes
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
-		WriteError(w, 400, "request body must be {box, device, name}")
+		WriteError(w, 400, "request body must be {box, device, name, handoff?}")
+		return
+	}
+	if len(body.Handoff) > a2a.MaxHandoffBytes {
+		WriteError(w, 400, "handoff too large")
 		return
 	}
 	if !SafeBox(body.Box) {
@@ -214,7 +225,7 @@ func (s *Server) boxActiveClaim(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 401, err.Error())
 		return
 	}
-	ad, err := s.claimActive(body.Box, body.Device, trimDeviceName(body.Name))
+	ad, err := s.claimActive(body.Box, body.Device, trimDeviceName(body.Name), body.Handoff)
 	if err != nil {
 		WriteError(w, 500, err.Error())
 		return

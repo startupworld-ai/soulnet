@@ -136,11 +136,11 @@ func TestDeviceHeaderOnMailboxOwnerRequests(t *testing.T) {
 func TestClaimActiveRequestShape(t *testing.T) {
 	rr := newRecordingRelay(t)
 	n := newIdlePeer(t, rr.srv.URL)
-	if _, err := n.ClaimActive(context.Background()); err == nil {
+	if _, err := n.ClaimActive(context.Background(), ""); err == nil {
 		t.Fatal("ClaimActive without a DeviceID must fail")
 	}
 	n.DeviceID, n.DeviceName = "dev-A", "Office desktop"
-	ad, err := n.ClaimActive(context.Background())
+	ad, err := n.ClaimActive(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestRunStopsWithDeviceKickedOnTakeover(t *testing.T) {
 	if ok, _ := b.IsActiveHere(context.Background()); ok {
 		t.Fatal("B is not the holder before claiming")
 	}
-	if _, err := b.ClaimActive(context.Background()); err != nil {
+	if _, err := b.ClaimActive(context.Background(), ""); err != nil {
 		t.Fatalf("ClaimActive: %v", err)
 	}
 
