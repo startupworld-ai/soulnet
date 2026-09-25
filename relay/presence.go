@@ -6,8 +6,10 @@
 // records seen[box][device] = now (and the X-Soulnet-Device-Name when present), and a
 // frozen device keeps itself visible with a cheap heartbeat:
 //
-//	POST /box/seen {box}          record presence only; ANY device of the box (never kicked)
-//	GET  /box/devices?box=        {"devices":[{device, name, last_seen, active}]} newest first
+//	POST /box/seen {box, offline?} record presence only; ANY device of the box (never kicked);
+//	                               offline=true is a clean-shutdown goodbye (sets Offline until the
+//	                               device's next signed request)
+//	GET  /box/devices?box=        {"devices":[{device, name, last_seen, active, offline}]} newest first
 //
 // POST /mail does not record: it is authenticated by the envelope signature, and a signed
 // envelope can be re-posted by whoever holds a copy of it, so it proves nothing about the
@@ -111,6 +113,7 @@ func (s *Server) noteDevice(r *http.Request, box string) {
 		d.Name = name
 	}
 	d.LastSeen = now
+	d.Offline = false // talking again: any goodbye it said earlier is stale
 	bp.dirty = true
 	wait := s.psFlushGap - time.Since(bp.lastFlush)
 	if wait <= 0 {
@@ -198,10 +201,11 @@ func (s *Server) mountPresence(must func(error)) {
 // can keep saying "I am still here".
 func (s *Server) boxSeen(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Box string `json:"box"`
+		Box     string `json:"box"`
+		Offline bool   `json:"offline"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<12)).Decode(&body); err != nil {
-		WriteError(w, 400, "request body must be {box}")
+		WriteError(w, 400, "request body must be {box, offline?}")
 		return
 	}
 	if !SafeBox(body.Box) {
@@ -216,7 +220,26 @@ func (s *Server) boxSeen(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 401, err.Error())
 		return
 	}
+	if body.Offline {
+		s.markOffline(body.Box, strings.TrimSpace(r.Header.Get(a2a.HeaderDevice)))
+	}
 	WriteJSON(w, 200, map[string]any{"ok": true})
+}
+
+// markOffline records a clean-shutdown goodbye for device on box (after authBox has noted the
+// request, so the entry exists). The flag is written through at once: a restart of the relay
+// right after a goodbye must not bring the device back as "maybe online".
+func (s *Server) markOffline(box, device string) {
+	s.psMu.Lock()
+	defer s.psMu.Unlock()
+	bp := s.presenceLocked(box)
+	d := bp.devices[device]
+	if d == nil {
+		return
+	}
+	d.Offline = true
+	bp.dirty = true
+	s.flushPresenceLocked(box, bp)
 }
 
 // boxDevices: GET /box/devices?box= (owner-signed) -> {"devices":[...]} most recent first.

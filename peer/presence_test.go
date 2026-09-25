@@ -54,3 +54,38 @@ func TestHeartbeatAndDevicesThroughPeer(t *testing.T) {
 		t.Fatal("Heartbeat without a DeviceID must fail")
 	}
 }
+
+// A clean-shutdown goodbye shows up as Offline at once, and the device's next signed request
+// clears it (it came back).
+func TestGoingOfflineThroughPeer(t *testing.T) {
+	ctx := context.Background()
+	a, b, _ := vaultTwoDevices(t)
+	if _, err := a.ClaimActive(ctx, ""); err != nil {
+		t.Fatalf("A claims: %v", err)
+	}
+	if err := a.GoingOffline(ctx); err != nil {
+		t.Fatalf("A says goodbye: %v", err)
+	}
+	offline := func() bool {
+		ds, err := b.Devices(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range ds {
+			if d.Device == "dev-A" {
+				return d.Offline
+			}
+		}
+		t.Fatal("dev-A missing from the device list")
+		return false
+	}
+	if !offline() {
+		t.Fatal("after GoingOffline, dev-A should be listed Offline")
+	}
+	if err := a.Heartbeat(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if offline() {
+		t.Fatal("any later signed request from dev-A must clear Offline")
+	}
+}

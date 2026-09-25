@@ -74,6 +74,19 @@ func (n *Peer) Heartbeat(ctx context.Context) error {
 	return wrapNet(pc.Heartbeat(ctxOrBackground(ctx)))
 }
 
+// GoingOffline says goodbye to the relay on a clean shutdown (see a2a.ProxyClient.GoingOffline):
+// GET /box/devices then shows this device Offline until it talks again.
+func (n *Peer) GoingOffline(ctx context.Context) error {
+	if n.DeviceID == "" {
+		return fmt.Errorf("GoingOffline: DeviceID is not set")
+	}
+	pc := n.proxyClient()
+	if pc == nil {
+		return ErrNoIdentity
+	}
+	return wrapNet(pc.GoingOffline(ctxOrBackground(ctx)))
+}
+
 // Devices lists the devices of our identity our relay has seen (most recent first, the
 // active one marked). Presence is refreshed by every signed mailbox / vault request that
 // carries a device id and by Heartbeat.

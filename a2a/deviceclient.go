@@ -86,14 +86,25 @@ func (c *ProxyClient) ActiveDevice(ctx context.Context) (*ActiveDevice, error) {
 // Heartbeat records this device as online on our mailbox (POST /box/seen, owner-signed).
 // It only records presence: any device of the identity may send it, active or not, and it
 // never answers kicked. Requires WithDevice.
-func (c *ProxyClient) Heartbeat(ctx context.Context) error {
+func (c *ProxyClient) Heartbeat(ctx context.Context) error { return c.boxSeen(ctx, false) }
+
+// GoingOffline tells the relay this device is shutting down cleanly (POST /box/seen
+// {offline:true}): peers reading GET /box/devices see Offline at once and need not wait for
+// it. Call it last, after the device's final writes; any later signed request clears it.
+func (c *ProxyClient) GoingOffline(ctx context.Context) error { return c.boxSeen(ctx, true) }
+
+func (c *ProxyClient) boxSeen(ctx context.Context, offline bool) error {
 	if c.Device == "" {
 		return fmt.Errorf("Heartbeat: no device id configured (WithDevice)")
 	}
 	if c.id == nil {
 		return fmt.Errorf("Heartbeat: no identity")
 	}
-	body, _ := json.Marshal(map[string]any{"box": c.id.Fingerprint()})
+	msg := map[string]any{"box": c.id.Fingerprint()}
+	if offline {
+		msg["offline"] = true
+	}
+	body, _ := json.Marshal(msg)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.Base+"/box/seen", bytes.NewReader(body))
 	if err != nil {
 		return err
