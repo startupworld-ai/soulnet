@@ -89,3 +89,42 @@ func TestGoingOfflineThroughPeer(t *testing.T) {
 		t.Fatal("any later signed request from dev-A must clear Offline")
 	}
 }
+
+func TestKeepPresenceConnectedThenOfflineOnStop(t *testing.T) {
+	a, b, _ := vaultTwoDevices(t)
+	state := func() (connected, offline bool) {
+		ds, err := b.Devices(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range ds {
+			if d.Device == "dev-A" {
+				return d.Connected, d.Offline
+			}
+		}
+		return false, false
+	}
+	wait := func(what string, cond func(c, o bool) bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if c, o := state(); cond(c, o) {
+				return
+			}
+			if time.Now().After(deadline) {
+				c, o := state()
+				t.Fatalf("%s: connected=%v offline=%v", what, c, o)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.KeepPresence(ctx, 0) }()
+	wait("A holds presence", func(c, o bool) bool { return c && !o })
+	cancel()
+	if err := <-done; err != context.Canceled {
+		t.Fatalf("KeepPresence returned %v, want context.Canceled", err)
+	}
+	wait("A offline once it stops", func(c, o bool) bool { return !c && o })
+}

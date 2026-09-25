@@ -2,6 +2,7 @@ package peer
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/startupworld-ai/soulnet/a2a"
@@ -81,6 +82,55 @@ func (n *Peer) presenceWatch(ctx context.Context) {
 				continue // stay quiet about offline friends on the first round
 			}
 			n.emit(Event{Kind: EventPresenceChanged, Peer: fr.Fingerprint, TS: time.Now(), On: on})
+		}
+	}
+}
+
+// KeepPresence holds the presence connection (GET /box/presence) until ctx ends, redialing
+// with a capped backoff whenever it drops. While it is held, GET /box/devices reports this
+// device Connected; the moment it ends -- process exit, crash, network gone, or about two
+// ping intervals of silence (lid closed) -- the relay marks it Offline, so a peer deciding
+// whether to wait for this device knows at once instead of inferring it from an old
+// LastSeen. ping is the server ping interval to ask for (0 = relay default; a phone asks
+// for a longer one to save battery). Requires a DeviceID. Returns ctx.Err().
+func (n *Peer) KeepPresence(ctx context.Context, ping time.Duration) error {
+	if n.DeviceID == "" {
+		return fmt.Errorf("KeepPresence: DeviceID is not set")
+	}
+	backoff := time.Second
+	for {
+		pc := n.proxyClient()
+		if pc != nil {
+			start := time.Now()
+			conn, err := pc.DialPresence(ctx, ping)
+			if err == nil {
+				// Answer the relay's pings; a silent relay (half-open connection) is caught by
+				// the read timeout. Closing the conn on ctx end unblocks ReadMessage.
+				expect := ping
+				if expect <= 0 {
+					expect = 15 * time.Second
+				}
+				conn.SetReadTimeout(2*expect + 5*time.Second)
+				stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						break
+					}
+				}
+				stop()
+				_ = conn.Close()
+				if time.Since(start) > time.Minute {
+					backoff = time.Second // it was a healthy connection; retry promptly
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
 		}
 	}
 }

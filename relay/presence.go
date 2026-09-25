@@ -56,6 +56,7 @@ type presenceState struct {
 	psMu       sync.Mutex
 	devSeen    map[string]*boxPresence
 	psFlushGap time.Duration // default presenceFlushEvery; 0 = write on every change (tests)
+	psConns    map[string]map[string]int // box -> device -> open presence connections (presencews.go)
 }
 
 func (s *Server) presencePath(box string) string {
@@ -170,8 +171,13 @@ func (s *Server) Devices(box string) []a2a.DeviceSeen {
 	s.psMu.Lock()
 	bp := s.presenceLocked(box)
 	out := make([]a2a.DeviceSeen, 0, len(bp.devices))
+	now := time.Now().UTC()
 	for _, d := range bp.devices {
-		out = append(out, *d)
+		x := *d
+		if s.connectedLocked(box, d.Device) {
+			x.Connected, x.Offline, x.LastSeen = true, false, now
+		}
+		out = append(out, x)
 	}
 	s.psMu.Unlock()
 	active := ""
@@ -194,6 +200,7 @@ func (s *Server) Devices(box string) []a2a.DeviceSeen {
 func (s *Server) mountPresence(must func(error)) {
 	must(s.HandleFunc("POST /box/seen", s.boxSeen))
 	must(s.HandleFunc("GET /box/devices", s.boxDevices))
+	must(s.HandleFunc("GET /box/presence", s.boxPresenceConn))
 }
 
 // boxSeen: POST /box/seen {box} (owner-signed, X-Soulnet-Device required) records presence

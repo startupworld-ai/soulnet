@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/startupworld-ai/soulnet/ws"
 )
 
 // ClaimActive makes this client's Device the active device of our mailbox
@@ -233,4 +236,38 @@ func (c *ProxyClient) RendezvousDelete(ctx context.Context, id string) error {
 		return apiErr(resp)
 	}
 	return nil
+}
+
+// DialPresence opens the presence connection (GET /box/presence, WebSocket): while it is open
+// the relay reports this device Connected; when it ends the device shows Offline at once.
+// ping is the server ping interval to ask for (0 = relay default). The caller keeps reading
+// from the returned conn (ReadMessage answers the relay's pings) and closes it on shutdown.
+func (c *ProxyClient) DialPresence(ctx context.Context, ping time.Duration) (*ws.Conn, error) {
+	if c.Device == "" {
+		return nil, fmt.Errorf("DialPresence: no device id configured (WithDevice)")
+	}
+	if c.id == nil {
+		return nil, fmt.Errorf("DialPresence: no identity")
+	}
+	q := url.Values{"box": {c.id.Fingerprint()}}
+	if ping > 0 {
+		q.Set("ping", ping.String())
+	}
+	httpURL := c.Base + "/box/presence?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, "GET", httpURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.signGet(req, "GET", "/box/presence"); err != nil {
+		return nil, err
+	}
+	c.setDevice(req)
+	wsURL := httpURL
+	switch {
+	case strings.HasPrefix(wsURL, "https://"):
+		wsURL = "wss://" + strings.TrimPrefix(wsURL, "https://")
+	case strings.HasPrefix(wsURL, "http://"):
+		wsURL = "ws://" + strings.TrimPrefix(wsURL, "http://")
+	}
+	return ws.Dial(ctx, wsURL, req.Header)
 }

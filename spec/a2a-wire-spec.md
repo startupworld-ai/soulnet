@@ -700,8 +700,9 @@ Kicked = `409 {"error":"kicked","active_device":…,"active_name":…,"since":"<
 |---|---|---|
 | `POST /box/active` | §6, signs `/box/active` | body `{box, device, name, handoff?}` (`handoff` at most 4096 bytes, opaque, stored verbatim and returned in the kicked verdict). Makes `device` active and wakes the mailbox's long poll so the previous device learns it at once. → `{ok, active}` |
 | `GET /box/active?box=` | §6, signs `/box/active` | `{"active": {device, name, since, handoff} \| null}` |
-| `POST /box/seen` | §6, signs `/box/seen`; `X-Soulnet-Device` required | body `{box}`. Records presence only; **not** behind the device gate (a frozen device keeps itself visible). → `{ok:true}` |
-| `GET /box/devices?box=` | §6, signs `/box/devices` | `{"devices":[{device, name, last_seen, active}]}`, most recently seen first |
+| `POST /box/seen` | §6, signs `/box/seen`; `X-Soulnet-Device` required | body `{box, offline?}`. Records presence only; **not** behind the device gate (a frozen device keeps itself visible). `offline:true` is a clean-shutdown goodbye: the device is listed `offline` until its next signed request. → `{ok:true}` |
+| `GET /box/presence?box=&ping=` | §6, signs `/box/presence`; `X-Soulnet-Device` required | WebSocket held open while the device is up. The relay pings every `ping` (bounded 5s–60s, default 15s) and drops the connection after 2 × ping + 2s of silence. While a connection is open the device is listed `connected` with `last_seen` = now; when its last connection ends it is listed `offline`. |
+| `GET /box/devices?box=` | §6, signs `/box/devices` | `{"devices":[{device, name, last_seen, active, offline, connected}]}`, most recently seen first |
 | `POST /rendezvous/{id}` · `GET /rendezvous/{id}?since=&wait=` · `DELETE /rendezvous/{id}` | none | pairing drop box for ciphertext: `{seq, data(base64)}`, at most 4 MB per blob and 64 MB per rendezvous, long poll up to 55 s, dropped after 10 min idle and on relay restart |
 
 ### 15.3 Presence

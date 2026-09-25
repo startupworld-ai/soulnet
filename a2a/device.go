@@ -49,6 +49,9 @@ type DeviceSeen struct {
 	// shutdown and has not talked to the relay since: a peer can stop waiting for it at once
 	// instead of inferring "gone" from LastSeen growing old. Any later signed request clears it.
 	Offline bool `json:"offline,omitempty"`
+	// Connected is set while the device holds a presence connection (GET /box/presence);
+	// LastSeen is then reported as "now".
+	Connected bool `json:"connected,omitempty"`
 }
 
 // RendezvousItem is one blob stored at a pairing rendezvous (POST/GET /rendezvous/{id}).
