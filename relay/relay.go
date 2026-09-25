@@ -60,7 +60,7 @@ type Server struct {
 	// Device presence (presence.go): when each device of a mailbox was last seen.
 	presenceState
 
-	// vMu guards vboxes (mailbox -> vault state), vaultQuota and vaultStore (see vault.go).
+	// vMu guards vboxes (mailbox -> vault state), vaultQuota, vaultKeep and vaultStore (see vault.go).
 	vMu             sync.Mutex
 	vboxes          map[string]*vaultBox
 	vaultQuota      int64               // per-mailbox vault quota in bytes (default DefaultVaultQuota)
@@ -70,6 +70,7 @@ type Server struct {
 	vaultDisk       *DiskVaultBlobStore // the on-disk blob layout (default store; source of MigrateVaultBlobs)
 	vaultStore      VaultBlobStore      // where blob bytes live (default vaultDisk, see SetVaultBlobStore)
 	vaultIndexSlack int                 // constant part of the index compaction threshold (default vaultIndexCompactSlack)
+	vaultKeep       int                 // versions per lane retained by collection (default a2a.VaultKeepVersions)
 
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
@@ -120,6 +121,7 @@ func New(dataDir string) (*Server, error) {
 		vaultGCDelay:    vaultGCDelay,
 		vaultGCEvery:    vaultGCEvery,
 		vaultIndexSlack: vaultIndexCompactSlack,
+		vaultKeep:       a2a.VaultKeepVersions,
 	}
 	s.vaultDisk = NewDiskVaultBlobStore(dataDir)
 	s.vaultStore = s.vaultDisk

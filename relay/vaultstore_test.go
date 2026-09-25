@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/startupworld-ai/soulnet/a2a"
 )
@@ -430,5 +432,57 @@ func TestVaultMigrateDiskToStore(t *testing.T) {
 	// And a disk-backed relay has nothing to migrate.
 	if res, err := f.s.MigrateVaultBlobs(context.Background(), nil); err != nil || res.Blobs != 0 {
 		t.Fatalf("disk store migration must be a no-op: %+v %v", res, err)
+	}
+}
+
+// The number of retained versions per lane is configurable; lowering it releases the
+// blobs of the versions that fell out at the next collection.
+func TestVaultKeepVersionsConfigurable(t *testing.T) {
+	f := newVaultFixture(t)
+	if f.s.VaultKeepVersions() != a2a.VaultKeepVersions {
+		t.Fatalf("default keep: %d", f.s.VaultKeepVersions())
+	}
+	var roots []string
+	for v := 1; v <= 3; v++ {
+		root, refs, _ := f.putVersion(t, "", fmt.Sprint("v", v), fmt.Sprint("only-in-v", v))
+		if code, body := f.setHead(t, "", "main", int64(v-1), root, refs); code != 200 {
+			t.Fatalf("v%d: %d %v", v, code, body)
+		}
+		roots = append(roots, root)
+	}
+	vb := f.s.vaultBoxFor(f.box)
+	vb.mu.Lock()
+	for id := range vb.index {
+		m := vb.index[id]
+		m.At = time.Now().Add(-vaultGrace - time.Hour).Unix()
+		vb.index[id] = m
+	}
+	vb.mu.Unlock()
+	// Default 3: all three versions survive.
+	if n, err := f.s.vaultGC(f.box); err != nil || n != 0 {
+		t.Fatalf("gc with keep=3: %d %v", n, err)
+	}
+	// Keep 2: v1 (root, refs, its own content) goes, v2 and v3 stay.
+	f.s.SetVaultKeepVersions(2)
+	if n, err := f.s.vaultGC(f.box); err != nil || n != 3 {
+		t.Fatalf("gc with keep=2: want 3 blobs removed, got %d %v", n, err)
+	}
+	if f.stored(roots[0]) || !f.stored(roots[1]) || !f.stored(roots[2]) {
+		t.Fatal("keep=2 must drop v1 and retain v2, v3")
+	}
+	// The next update trims the head record to keep-1 older versions.
+	root4, refs4, _ := f.putVersion(t, "", "v4", "only-in-v4")
+	if code, body := f.setHead(t, "", "main", 3, root4, refs4); code != 200 {
+		t.Fatalf("v4: %d %v", code, body)
+	}
+	vb.mu.Lock()
+	hist := len(vb.heads["main"].History)
+	vb.mu.Unlock()
+	if hist != 1 {
+		t.Fatalf("history after update with keep=2: %d, want 1", hist)
+	}
+	f.s.SetVaultKeepVersions(0)
+	if f.s.VaultKeepVersions() != a2a.VaultKeepVersions {
+		t.Fatal("<= 0 restores the default")
 	}
 }

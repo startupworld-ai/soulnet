@@ -32,7 +32,8 @@
 // A head update is refused (422) unless root, refs and every id refs names are stored, so
 // a lane never points at a half-uploaded version.
 //
-// Garbage collection keeps, per mailbox, every blob that the last VaultKeepVersions
+// Garbage collection keeps, per mailbox, every blob that the last N versions (default
+// a2a.VaultKeepVersions, see SetVaultKeepVersions)
 // versions of any lane reference (their root, their refs blob and every id the refs list
 // names) plus every blob written -- or confirmed through has / an idempotent put -- within
 // the last 24 hours (so an upload in flight, or a "has says present, skip it" decision, is
@@ -96,7 +97,7 @@ type vaultRev struct {
 // vaultHeadRec is heads/<lane>.json: the current version plus the older retained ones.
 type vaultHeadRec struct {
 	vaultRev
-	History []vaultRev `json:"history,omitempty"` // previous versions, newest first, at most VaultKeepVersions-1
+	History []vaultRev `json:"history,omitempty"` // previous versions, newest first, at most keep-1 (SetVaultKeepVersions)
 }
 
 func (h *vaultHeadRec) public(lane string) a2a.VaultHead {
@@ -129,6 +130,27 @@ func (s *Server) SetVaultQuota(n int64) {
 	s.vMu.Lock()
 	s.vaultQuota = n
 	s.vMu.Unlock()
+}
+
+// SetVaultKeepVersions sets how many versions per lane (the current one included) keep
+// their blobs alive through garbage collection (<= 0 restores a2a.VaultKeepVersions).
+// Lowering it takes effect for existing lanes at their next collection: older retained
+// versions stop protecting their blobs, and are trimmed from the head record at the next
+// update of the lane.
+func (s *Server) SetVaultKeepVersions(n int) {
+	if n <= 0 {
+		n = a2a.VaultKeepVersions
+	}
+	s.vMu.Lock()
+	s.vaultKeep = n
+	s.vMu.Unlock()
+}
+
+// VaultKeepVersions returns the number of versions per lane that garbage collection retains.
+func (s *Server) VaultKeepVersions() int {
+	s.vMu.Lock()
+	defer s.vMu.Unlock()
+	return s.vaultKeep
 }
 
 // VaultQuota returns the per-mailbox vault quota in bytes.
@@ -739,8 +761,8 @@ func (s *Server) vaultPutHead(w http.ResponseWriter, r *http.Request) {
 	}}
 	if cur != nil {
 		next.History = append([]vaultRev{cur.vaultRev}, cur.History...)
-		if len(next.History) > a2a.VaultKeepVersions-1 {
-			next.History = next.History[:a2a.VaultKeepVersions-1]
+		if keep := s.VaultKeepVersions(); len(next.History) > keep-1 {
+			next.History = next.History[:keep-1]
 		}
 	}
 	raw, _ := json.Marshal(next)
@@ -939,8 +961,13 @@ func (s *Server) vaultGCLocked(box string, vb *vaultBox) (int, error) {
 	store := s.vaultBlobs()
 	ctx := context.Background()
 	live := map[string]bool{}
+	keep := s.VaultKeepVersions()
 	for lane, h := range vb.heads {
-		for _, rev := range append([]vaultRev{h.vaultRev}, h.History...) {
+		hist := h.History
+		if len(hist) > keep-1 {
+			hist = hist[:keep-1]
+		}
+		for _, rev := range append([]vaultRev{h.vaultRev}, hist...) {
 			live[rev.Root], live[rev.Refs] = true, true
 			raw, err := store.Get(ctx, box, rev.Refs)
 			if err != nil {
