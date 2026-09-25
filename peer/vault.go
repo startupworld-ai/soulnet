@@ -141,3 +141,13 @@ func (n *Peer) VaultUsage(ctx context.Context) (*VaultUsage, error) {
 	u, err := pc.VaultUsage(ctxOrBackground(ctx))
 	return u, vaultWrap(err)
 }
+
+// VaultPurge wipes our whole vault on our relay (every blob and lane). Active device only
+// (*ErrKicked otherwise); idempotent. Hosts call it when cloud backup is switched off.
+func (n *Peer) VaultPurge(ctx context.Context) error {
+	pc := n.vaultClient()
+	if pc == nil {
+		return ErrNoIdentity
+	}
+	return vaultWrap(pc.VaultPurge(ctxOrBackground(ctx)))
+}

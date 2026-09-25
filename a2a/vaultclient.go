@@ -276,3 +276,14 @@ func (c *ProxyClient) VaultUsage(ctx context.Context) (*VaultUsage, error) {
 	}
 	return &u, nil
 }
+
+// VaultPurge wipes our mailbox's whole vault (every blob and lane; DELETE /vault/{box}).
+// Active device only (*ErrKicked otherwise). Idempotent: purging an empty vault succeeds.
+func (c *ProxyClient) VaultPurge(ctx context.Context) error {
+	resp, err := c.vaultDo(ctx, "DELETE", c.vaultPath(""), "", nil, "", "")
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}

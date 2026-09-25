@@ -123,6 +123,7 @@ func TestVaultRequiresOwnerSignature(t *testing.T) {
 		{"DELETE", f.vpath("/head/main") + "?prev_version=1"},
 		{"GET", f.vpath("/heads")},
 		{"GET", f.vpath("/usage")},
+		{"DELETE", f.vpath("")},
 	}
 	for _, rt := range routes {
 		body := []byte(`{"ids":[],"prev_version":0,"root":"` + id + `","refs":"` + id + `"}`)
@@ -577,5 +578,63 @@ func TestVaultLaneMatchesDeviceIDRule(t *testing.T) {
 	}
 	if !a2a.ValidVaultLane("main") || a2a.ValidVaultLane("Main") || a2a.ValidVaultLane("main2") {
 		t.Fatal("main lane rule")
+	}
+}
+
+func TestVaultPurge(t *testing.T) {
+	f := newVaultFixture(t)
+	root, refs, ids := f.putVersion(t, "dev-A", "v1", "a", "b")
+	if code, body := f.setHead(t, "dev-A", "main", 0, root, refs); code != 200 {
+		t.Fatalf("main: %d %v", code, body)
+	}
+	if code, body := f.setHead(t, "dev-B", "dev-dev-B", 0, root, refs); code != 200 {
+		t.Fatalf("dev lane: %d %v", code, body)
+	}
+	// A non-active device may not wipe the vault; nothing is touched.
+	code, body := f.do(t, "DELETE", f.vpath(""), "", "dev-B", nil)
+	assertKicked(t, code, body, "dev-A")
+	if u := f.usage(t); u.Blobs != 4 {
+		t.Fatalf("a refused purge must not remove anything: %+v", u)
+	}
+	code, body = f.do(t, "DELETE", f.vpath(""), "", "dev-A", nil)
+	if code != 200 || body["blobs"] != float64(4) {
+		t.Fatalf("purge: %d %v", code, body)
+	}
+	if u := f.usage(t); u.Bytes != 0 || u.Blobs != 0 {
+		t.Fatalf("usage after purge: %+v", u)
+	}
+	if code, raw := f.raw(t, "GET", f.vpath("/heads"), "dev-A", nil); code != 200 || !strings.Contains(string(raw), `"heads":[]`) {
+		t.Fatalf("heads after purge: %d %s", code, raw)
+	}
+	if code, _ := f.raw(t, "GET", f.vpath("/blob/"+ids[0]), "dev-A", nil); code != 404 {
+		t.Fatalf("old blob after purge: want 404, got %d", code)
+	}
+	if code, _ := f.raw(t, "GET", f.vpath("/head/main"), "dev-A", nil); code != 404 {
+		t.Fatalf("old head after purge: want 404, got %d", code)
+	}
+	// Idempotent: a second purge (no vault left) is still 200.
+	if code, body = f.do(t, "DELETE", f.vpath(""), "", "dev-A", nil); code != 200 || body["blobs"] != float64(0) {
+		t.Fatalf("second purge: %d %v", code, body)
+	}
+	// The vault starts over cleanly: main is created from version 0 again, usage counts afresh.
+	root2, refs2, _ := f.putVersion(t, "dev-A", "v2", "c")
+	if code, body = f.setHead(t, "dev-A", "main", 0, root2, refs2); code != 200 {
+		t.Fatalf("recreate main after purge: %d %v", code, body)
+	}
+	if u := f.usage(t); u.Blobs != 3 {
+		t.Fatalf("usage after starting over: %+v", u)
+	}
+	// And the counters stay right across a restart after a purge.
+	s2, err := New(f.s.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	vb := s2.vaultBoxFor(f.box)
+	vb.mu.Lock()
+	err = s2.vaultLoadLocked(f.box, vb)
+	blobs, heads := vb.blobs, len(vb.heads)
+	vb.mu.Unlock()
+	if err != nil || blobs != 3 || heads != 1 {
+		t.Fatalf("rescan after purge + restart: blobs=%d heads=%d err=%v", blobs, heads, err)
 	}
 }

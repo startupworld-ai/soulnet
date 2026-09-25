@@ -9,6 +9,7 @@
 //	DELETE /vault/{box}/head/{lane}?prev_version=N   drop a lane (CAS as well)
 //	GET    /vault/{box}/heads         {"heads":[...]} every lane
 //	GET    /vault/{box}/usage         {bytes, blobs, quota}
+//	DELETE /vault/{box}               purge: drop every blob and lane of the mailbox (active device only)
 //
 // Every route is signed by the mailbox owner exactly like the inbox (VerifyRequest over
 // method + URL path; the signed fingerprint must equal {box}). Blob ids are keyed hashes the
@@ -23,6 +24,10 @@
 //	dev-<device>   only the device whose X-Soulnet-Device equals <device> may advance it
 //	               (403 otherwise); a kicked device parks its unsent changes there. The
 //	               active device may DELETE any dev lane once it merged it.
+//
+// Purge (DELETE /vault/{box}) wipes the mailbox's whole vault; it is gated on the active
+// device like lane main and is idempotent (a mailbox without a vault answers 200 as well).
+// A host uses it when backups stop being needed (e.g. back down to a single device).
 //
 // A head update is refused (422) unless root, refs and every id refs names are stored, so
 // a lane never points at a half-uploaded version.
@@ -237,6 +242,7 @@ func (s *Server) mountVault(must func(error)) {
 	must(s.HandleFunc("DELETE /vault/{box}/head/{lane}", s.vaultDeleteHead))
 	must(s.HandleFunc("GET /vault/{box}/heads", s.vaultListHeads))
 	must(s.HandleFunc("GET /vault/{box}/usage", s.vaultUsage))
+	must(s.HandleFunc("DELETE /vault/{box}", s.vaultPurge))
 }
 
 // vaultAuth validates {box} and the owner signature over method + URL path. It answers
@@ -722,6 +728,36 @@ func (s *Server) vaultDeleteHead(w http.ResponseWriter, r *http.Request) {
 	vb.mu.Unlock()
 	s.vaultScheduleGC(box)
 	WriteJSON(w, 200, map[string]any{"ok": true})
+}
+
+// vaultPurge: DELETE /vault/{box} drops every blob and lane of box and resets its usage.
+// Active device only (409 kicked otherwise, legacy callers pass while nobody claimed the
+// mailbox). Idempotent: answers 200 with what was freed (zero when there was no vault).
+// An upload racing the purge fails (its temp file is gone) rather than resurrecting data.
+func (s *Server) vaultPurge(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.vaultAuth(w, r)
+	if !ok {
+		return
+	}
+	if ad := s.deviceGate(r, box); ad != nil {
+		writeKicked(w, ad)
+		return
+	}
+	vb := s.vaultOpen(w, box)
+	if vb == nil {
+		return
+	}
+	defer vb.mu.Unlock()
+	freedBytes, freedBlobs := vb.bytes, vb.blobs
+	if err := os.RemoveAll(s.vaultBoxDir(box)); err != nil {
+		vb.loaded = false // partially removed: rescan on next use instead of trusting the counters
+		log.Printf("[relay] vault box=%s purge failed: %v", a2a.ShortFp(box), err)
+		WriteError(w, 500, err.Error())
+		return
+	}
+	vb.bytes, vb.blobs, vb.heads = 0, 0, map[string]*vaultHeadRec{}
+	log.Printf("[relay] vault box=%s purged (%d blob(s), %d bytes)", a2a.ShortFp(box), freedBlobs, freedBytes)
+	WriteJSON(w, 200, map[string]any{"ok": true, "bytes": freedBytes, "blobs": freedBlobs})
 }
 
 // writeFileAtomic replaces path with data (temp file in the same directory, fsync, rename).
