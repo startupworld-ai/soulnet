@@ -61,14 +61,15 @@ type Server struct {
 	presenceState
 
 	// vMu guards vboxes (mailbox -> vault state), vaultQuota and vaultStore (see vault.go).
-	vMu          sync.Mutex
-	vboxes       map[string]*vaultBox
-	vaultQuota   int64               // per-mailbox vault quota in bytes (default DefaultVaultQuota)
-	vaultGrace   time.Duration       // recently written / confirmed blobs survive collection (default vaultGrace)
-	vaultGCDelay time.Duration       // debounce of the collection after a head update (< 0 disables it)
-	vaultGCEvery time.Duration       // minimum spacing of collections per mailbox
-	vaultDisk    *DiskVaultBlobStore // the on-disk blob layout (default store; source of MigrateVaultBlobs)
-	vaultStore   VaultBlobStore      // where blob bytes live (default vaultDisk, see SetVaultBlobStore)
+	vMu             sync.Mutex
+	vboxes          map[string]*vaultBox
+	vaultQuota      int64               // per-mailbox vault quota in bytes (default DefaultVaultQuota)
+	vaultGrace      time.Duration       // recently written / confirmed blobs survive collection (default vaultGrace)
+	vaultGCDelay    time.Duration       // debounce of the collection after a head update (< 0 disables it)
+	vaultGCEvery    time.Duration       // minimum spacing of collections per mailbox
+	vaultDisk       *DiskVaultBlobStore // the on-disk blob layout (default store; source of MigrateVaultBlobs)
+	vaultStore      VaultBlobStore      // where blob bytes live (default vaultDisk, see SetVaultBlobStore)
+	vaultIndexSlack int                 // constant part of the index compaction threshold (default vaultIndexCompactSlack)
 
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
@@ -113,11 +114,12 @@ func New(dataDir string) (*Server, error) {
 
 		presenceState: presenceState{devSeen: map[string]*boxPresence{}, psFlushGap: presenceFlushEvery},
 
-		vboxes:       map[string]*vaultBox{},
-		vaultQuota:   DefaultVaultQuota,
-		vaultGrace:   vaultGrace,
-		vaultGCDelay: vaultGCDelay,
-		vaultGCEvery: vaultGCEvery,
+		vboxes:          map[string]*vaultBox{},
+		vaultQuota:      DefaultVaultQuota,
+		vaultGrace:      vaultGrace,
+		vaultGCDelay:    vaultGCDelay,
+		vaultGCEvery:    vaultGCEvery,
+		vaultIndexSlack: vaultIndexCompactSlack,
 	}
 	s.vaultDisk = NewDiskVaultBlobStore(dataDir)
 	s.vaultStore = s.vaultDisk

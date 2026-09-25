@@ -36,7 +36,7 @@ import (
 
 const vaultIndexVersion = 1
 
-// vaultIndexCompactSlack is the constant part of the compaction threshold.
+// vaultIndexCompactSlack is the constant part of the compaction threshold (Server.vaultIndexSlack).
 const vaultIndexCompactSlack = 1024
 
 type vaultBlobMeta struct {
@@ -155,7 +155,7 @@ func (s *Server) vaultIndexAppendLocked(box string, vb *vaultBox, recs ...vaultI
 		return fmt.Errorf("vault index append: %w", err)
 	}
 	vb.indexLines += len(recs)
-	if vb.indexLines > 2*len(vb.index)+vaultIndexCompactSlack {
+	if vb.indexLines > 2*len(vb.index)+s.vaultIndexSlack {
 		if err := s.vaultIndexCompactLocked(box, vb); err != nil {
 			return err
 		}
