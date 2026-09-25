@@ -1,5 +1,5 @@
 // Package relay implements the soulnet mail relay: the A2A post office (A2A wire spec §7) plus the opt-in
-// capability directory (§8).
+// capability directory (§8) and the per-mailbox encrypted backup vault (§15, vault.go).
 //
 // The post office does exactly three things: accept encrypted, signed envelopes; stage them in buckets keyed by the
 // recipient public-key fingerprint; delete them once fetched. A pure dumb pipe -- it cannot read the
@@ -57,6 +57,14 @@ type Server struct {
 	rvIdle     time.Duration // inactivity after which a rendezvous is dropped (default rendezvousIdle)
 	rvMaxTotal int64         // decoded bytes one rendezvous may hold (default maxRendezvousTotal)
 
+	// vMu guards vboxes (mailbox -> vault state) and vaultQuota (see vault.go).
+	vMu          sync.Mutex
+	vboxes       map[string]*vaultBox
+	vaultQuota   int64         // per-mailbox vault quota in bytes (default DefaultVaultQuota)
+	vaultGrace   time.Duration // recently written / confirmed blobs survive collection (default vaultGrace)
+	vaultGCDelay time.Duration // debounce of the collection after a head update (< 0 disables it)
+	vaultGCEvery time.Duration // minimum spacing of collections per mailbox
+
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
 
@@ -97,6 +105,12 @@ func New(dataDir string) (*Server, error) {
 		rendezvous: map[string]*rvState{},
 		rvIdle:     rendezvousIdle,
 		rvMaxTotal: maxRendezvousTotal,
+
+		vboxes:       map[string]*vaultBox{},
+		vaultQuota:   DefaultVaultQuota,
+		vaultGrace:   vaultGrace,
+		vaultGCDelay: vaultGCDelay,
+		vaultGCEvery: vaultGCEvery,
 	}
 	s.dir.afterPublish = func(fp string) { s.emit(Event{Kind: EventDirectoryPublished, FP: fp}) }
 	s.resetRendezvous()
@@ -205,6 +219,7 @@ func (s *Server) mountCore() {
 	s.mountGroups(must)
 	s.mountDevice(must)
 	s.mountRendezvous(must)
+	s.mountVault(must)
 	must(s.HandleFunc("POST /directory/publish", s.dir.handlePublish))
 	must(s.HandleFunc("POST /directory/unpublish", s.dir.handleUnpublish))
 	must(s.HandleFunc("GET /directory/query", s.dir.handleQuery))
