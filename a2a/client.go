@@ -42,6 +42,10 @@ type ProxyClient struct {
 	// header. Set them via WithDevice.
 	Device     string
 	DeviceName string
+
+	// VaultHTTP serves the vault requests (vaultclient.go); nil = a client with
+	// DefaultVaultTimeout sharing HTTP's transport.
+	VaultHTTP *http.Client
 }
 
 // WithDevice makes the client identify itself as device id (name is the human-readable
@@ -110,6 +114,13 @@ func (e *RelayError) Error() string {
 }
 
 func apiErr(resp *http.Response) error {
+	// 4 KB handoff + the rest of the verdict: read up to 8 KB.
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	return apiErrFrom(resp.StatusCode, raw)
+}
+
+// apiErrFrom maps a non-2xx status + body to *ErrKicked (409 kicked) or *RelayError.
+func apiErrFrom(status int, raw []byte) error {
 	var e struct {
 		Error        string `json:"error"`
 		ActiveDevice string `json:"active_device"`
@@ -117,17 +128,15 @@ func apiErr(resp *http.Response) error {
 		Since        string `json:"since"`
 		Handoff      string `json:"handoff"`
 	}
-	// 4 KB handoff + the rest of the verdict: read up to 8 KB.
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	_ = json.Unmarshal(raw, &e)
-	if resp.StatusCode == http.StatusConflict && e.Error == KickedErrorCode {
+	if status == http.StatusConflict && e.Error == KickedErrorCode {
 		since, _ := time.Parse(time.RFC3339, e.Since)
 		return &ErrKicked{ActiveDevice: e.ActiveDevice, ActiveName: e.ActiveName, Since: since, Handoff: e.Handoff}
 	}
 	if e.Error == "" {
 		e.Error = strings.TrimSpace(string(raw))
 	}
-	return &RelayError{StatusCode: resp.StatusCode, Message: e.Error}
+	return &RelayError{StatusCode: status, Message: e.Error}
 }
 
 // Deliver posts an encrypted, signed outer envelope to the relay (no auth header needed).
