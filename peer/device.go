@@ -60,6 +60,35 @@ func (n *Peer) IsActiveHere(ctx context.Context) (bool, error) {
 	return ad == nil || ad.Device == n.DeviceID, nil
 }
 
+// Heartbeat tells our relay this device is online (POST /box/seen). A frozen device -- one
+// that is not active and therefore does not poll the mailbox -- calls it periodically so
+// the other devices can see it is alive; it never answers kicked. Requires a DeviceID.
+func (n *Peer) Heartbeat(ctx context.Context) error {
+	if n.DeviceID == "" {
+		return fmt.Errorf("Heartbeat: DeviceID is not set")
+	}
+	pc := n.proxyClient()
+	if pc == nil {
+		return ErrNoIdentity
+	}
+	return wrapNet(pc.Heartbeat(ctxOrBackground(ctx)))
+}
+
+// Devices lists the devices of our identity our relay has seen (most recent first, the
+// active one marked). Presence is refreshed by every signed mailbox / vault request that
+// carries a device id and by Heartbeat.
+func (n *Peer) Devices(ctx context.Context) ([]a2a.DeviceSeen, error) {
+	pc := n.proxyClient()
+	if pc == nil {
+		return nil, ErrNoIdentity
+	}
+	ds, err := pc.Devices(ctxOrBackground(ctx))
+	if err != nil {
+		return nil, wrapNet(err)
+	}
+	return ds, nil
+}
+
 // rendezvousClient talks to our relay without needing an identity: a device that is about
 // to JOIN the identity has none yet, and the rendezvous endpoints are unauthenticated.
 func (n *Peer) rendezvousClient() *a2a.ProxyClient {

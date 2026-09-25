@@ -13,7 +13,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/startupworld-ai/soulnet/relay"
@@ -45,6 +47,15 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		// No global WriteTimeout -- GET /mail long-polls must be able to hang for 55s.
 	}
+	// Device presence is written lazily; flush it when asked to stop.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		s.Flush()
+		log.Printf("soulnet-relay stopping (state flushed)")
+		os.Exit(0)
+	}()
 	log.Printf("soulnet-relay started: addr=%s data=%s vault-quota=%d bytes", *addr, *data, quota)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)

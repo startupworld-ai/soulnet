@@ -57,6 +57,9 @@ type Server struct {
 	rvIdle     time.Duration // inactivity after which a rendezvous is dropped (default rendezvousIdle)
 	rvMaxTotal int64         // decoded bytes one rendezvous may hold (default maxRendezvousTotal)
 
+	// Device presence (presence.go): when each device of a mailbox was last seen.
+	presenceState
+
 	// vMu guards vboxes (mailbox -> vault state) and vaultQuota (see vault.go).
 	vMu          sync.Mutex
 	vboxes       map[string]*vaultBox
@@ -105,6 +108,8 @@ func New(dataDir string) (*Server, error) {
 		rendezvous: map[string]*rvState{},
 		rvIdle:     rendezvousIdle,
 		rvMaxTotal: maxRendezvousTotal,
+
+		presenceState: presenceState{devSeen: map[string]*boxPresence{}, psFlushGap: presenceFlushEvery},
 
 		vboxes:       map[string]*vaultBox{},
 		vaultQuota:   DefaultVaultQuota,
@@ -218,6 +223,7 @@ func (s *Server) mountCore() {
 	}))
 	s.mountGroups(must)
 	s.mountDevice(must)
+	s.mountPresence(must)
 	s.mountRendezvous(must)
 	s.mountVault(must)
 	must(s.HandleFunc("POST /directory/publish", s.dir.handlePublish))
@@ -320,6 +326,7 @@ func (s *Server) authBox(r *http.Request, method, path, box string) error {
 	if fp != box {
 		return errors.New("not allowed to read this mailbox")
 	}
+	s.noteDevice(r, box) // device presence: a verified owner request from this device
 	return nil
 }
 

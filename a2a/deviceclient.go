@@ -83,6 +83,71 @@ func (c *ProxyClient) ActiveDevice(ctx context.Context) (*ActiveDevice, error) {
 	return out.Active, nil
 }
 
+// Heartbeat records this device as online on our mailbox (POST /box/seen, owner-signed).
+// It only records presence: any device of the identity may send it, active or not, and it
+// never answers kicked. Requires WithDevice.
+func (c *ProxyClient) Heartbeat(ctx context.Context) error {
+	if c.Device == "" {
+		return fmt.Errorf("Heartbeat: no device id configured (WithDevice)")
+	}
+	if c.id == nil {
+		return fmt.Errorf("Heartbeat: no identity")
+	}
+	body, _ := json.Marshal(map[string]any{"box": c.id.Fingerprint()})
+	req, err := http.NewRequestWithContext(ctx, "POST", c.Base+"/box/seen", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := c.signGet(req, "POST", "/box/seen"); err != nil {
+		return err
+	}
+	c.setDevice(req)
+	resp, err := c.shortHTTP().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return apiErr(resp)
+	}
+	return nil
+}
+
+// Devices lists the devices of our identity the relay has seen, most recent first
+// (GET /box/devices, owner-signed).
+func (c *ProxyClient) Devices(ctx context.Context) ([]DeviceSeen, error) {
+	if c.id == nil {
+		return nil, fmt.Errorf("Devices: no identity")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.Base+"/box/devices?box="+url.QueryEscape(c.id.Fingerprint()), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.signGet(req, "GET", "/box/devices"); err != nil {
+		return nil, err
+	}
+	c.setDevice(req)
+	resp, err := c.shortHTTP().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, apiErr(resp)
+	}
+	var out struct {
+		Devices []DeviceSeen `json:"devices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.Devices == nil {
+		out.Devices = []DeviceSeen{}
+	}
+	return out.Devices, nil
+}
+
 // RendezvousPut stores one blob at rendezvous id (POST /rendezvous/{id}; no auth, data
 // must already be ciphertext, at most 4 MB).
 func (c *ProxyClient) RendezvousPut(ctx context.Context, id string, seq int64, data []byte) error {

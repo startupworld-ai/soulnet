@@ -37,6 +37,16 @@ type ActiveDevice struct {
 	Handoff string `json:"handoff,omitempty"`
 }
 
+// DeviceSeen is one device of an identity as the relay last saw it (GET /box/devices):
+// every owner-signed request carrying HeaderDevice, and the POST /box/seen heartbeat a
+// frozen device sends, refresh LastSeen. Active marks the mailbox's active device.
+type DeviceSeen struct {
+	Device   string    `json:"device"`
+	Name     string    `json:"name,omitempty"`
+	LastSeen time.Time `json:"last_seen"`
+	Active   bool      `json:"active,omitempty"`
+}
+
 // RendezvousItem is one blob stored at a pairing rendezvous (POST/GET /rendezvous/{id}).
 // Data is opaque ciphertext to the relay; JSON carries it base64 (standard encoding).
 type RendezvousItem struct {
