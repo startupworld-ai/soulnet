@@ -25,7 +25,7 @@ import (
 // need not be listed. A refs blob is bounded by MaxVaultBlobBytes like any blob (about
 // 64,000 ids). EncodeVaultRefs / ParseVaultRefs implement exactly this.
 //
-// See the wire spec §15 and relay/vault.go for the endpoints.
+// See the wire spec §16 and relay/vault.go for the endpoints.
 
 // Vault limits and lane names shared by the relay and its clients.
 const (

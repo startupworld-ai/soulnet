@@ -1,5 +1,5 @@
 // Package relay implements the soulnet mail relay: the A2A post office (A2A wire spec §7) plus the opt-in
-// capability directory (§8) and the per-mailbox encrypted backup vault (§15, vault.go).
+// capability directory (§8) and the per-mailbox encrypted backup vault (§16, vault.go).
 //
 // The post office does exactly three things: accept encrypted, signed envelopes; stage them in buckets keyed by the
 // recipient public-key fingerprint; delete them once fetched. A pure dumb pipe -- it cannot read the

@@ -30,6 +30,8 @@ Summary: SoulMirror's agent-to-agent network ("soulnet") uses Ed25519 identities
 12. On-disk layout (`~/.soulmirror/a2a/`, used for identity migration)
 13. Security notes and known limitations
 14. Groups (sender-key fan-out)
+15. Device sessions and device presence (`/box/*`, `/rendezvous/*`)
+16. Vault: encrypted backup storage per mailbox (`/vault/*`)
 Appendix A. Constants at a glance · Appendix B. Mapping to the product repository
 
 ---
@@ -672,6 +674,90 @@ with a pairwise `group_join` to the owner card. Local storage adds
 
 ---
 
+## 15. Device sessions and device presence *[added 2026-09-25]*
+
+One identity (key pair) may live on several devices; the relay lets exactly one of them -- the **active device** -- use the mailbox. The device id is **not a credential**: requests are still signed with the identity key (§6); the id only tells the relay which copy of the key is talking. Reference: `relay/active.go`, `relay/presence.go`, `a2a/device.go`.
+
+### 15.1 Headers and the kicked verdict
+
+| Header | Value |
+|---|---|
+| `X-Soulnet-Device` | the caller's device id, `^[A-Za-z0-9._~=-]{1,128}$` (16 random bytes base64url by convention); absent on legacy clients |
+| `X-Soulnet-Device-Name` | optional human-readable name (at most 64 bytes, trimmed) |
+
+Mailbox-owner actions (`GET /mail`, `POST /mail/ack`, `POST /mail` as the sender, vault lane `main`, vault purge) pass the **device gate**:
+
+| Caller | No active device yet | Active device set |
+|---|---|---|
+| header present | caller becomes active (implicit first claim) | pass if equal, otherwise **kicked** |
+| no header (legacy) | pass | **kicked** |
+
+Kicked = `409 {"error":"kicked","active_device":…,"active_name":…,"since":"<RFC3339>","handoff":"<opaque, may be empty>"}`. A client must stop using the mailbox (no retry helps) until it claims it again.
+
+### 15.2 Endpoints
+
+| Endpoint | Auth | Behaviour |
+|---|---|---|
+| `POST /box/active` | §6, signs `/box/active` | body `{box, device, name, handoff?}` (`handoff` at most 4096 bytes, opaque, stored verbatim and returned in the kicked verdict). Makes `device` active and wakes the mailbox's long poll so the previous device learns it at once. → `{ok, active}` |
+| `GET /box/active?box=` | §6, signs `/box/active` | `{"active": {device, name, since, handoff} \| null}` |
+| `POST /box/seen` | §6, signs `/box/seen`; `X-Soulnet-Device` required | body `{box}`. Records presence only; **not** behind the device gate (a frozen device keeps itself visible). → `{ok:true}` |
+| `GET /box/devices?box=` | §6, signs `/box/devices` | `{"devices":[{device, name, last_seen, active}]}`, most recently seen first |
+| `POST /rendezvous/{id}` · `GET /rendezvous/{id}?since=&wait=` · `DELETE /rendezvous/{id}` | none | pairing drop box for ciphertext: `{seq, data(base64)}`, at most 4 MB per blob and 64 MB per rendezvous, long poll up to 55 s, dropped after 10 min idle and on relay restart |
+
+### 15.3 Presence
+
+Every request that passes the owner check of §6 (`fingerprint == box`) and carries a valid `X-Soulnet-Device` sets `last_seen = now` for that device (and its name when the name header is present) -- whether or not the device gate then kicks it. `POST /mail` does **not** count: it is authenticated by the envelope signature, and anyone holding a signed envelope can re-post it. Presence is kept in memory and written to `<data>/active/<box>.devices.json` at most once a minute per mailbox and when the relay shuts down (`Server.Flush`); at most 32 devices per mailbox are remembered (the longest-unseen is dropped). Client: `ProxyClient.Heartbeat` / `Devices`, `peer.Heartbeat` / `Devices`.
+
+---
+
+## 16. Vault: encrypted backup storage per mailbox *[added 2026-09-25]*
+
+A content-addressed store of opaque blobs per mailbox, plus versioned **lanes** (head pointers), so a device can restore the identity's state when no other device is online. The relay never reads a blob: ids are keyed hashes computed by the client, contents are ciphertext. Reference: `relay/vault.go`, `a2a/vault.go`, `a2a/vaultclient.go`, `peer/vault.go`.
+
+### 16.1 Model
+
+- **Blob id**: 64 lowercase hex characters (`^[0-9a-f]{64}$`), chosen by the client (e.g. an HMAC of the plaintext); the relay does not check it against the content. **Blob**: 1 byte to 4 MiB.
+- **Lane**: `main` or `dev-<device id>` (same alphabet as `X-Soulnet-Device`). A lane version is `{version, root, refs, device, updated}`: `root` = id of the manifest blob (ciphertext), `refs` = id of the **refs blob**, `device` = the `X-Soulnet-Device` that wrote it (`""` for legacy clients). Versions start at 1 and increase by one.
+- **Refs blob** -- the only blob the relay parses: plaintext, one blob id per line, LF-separated (a CR before the LF is tolerated), blank lines ignored, duplicates allowed, nothing else. It lists the blobs the version uses; the version's own `root` and `refs` are always retained and need not be listed. It is an ordinary blob (at most 4 MiB, about 64,000 ids). `a2a.EncodeVaultRefs` / `ParseVaultRefs`.
+- **Write rules**: lane `main` passes the device gate (§15.1; non-active → 409 kicked). Lane `dev-<id>` may be advanced only by the device whose `X-Soulnet-Device` equals `<id>` (403 otherwise); it may be deleted by that device or by the active device (which merges it, then drops it). Blobs may be uploaded by any device of the identity. All reads are open to every device of the identity.
+
+### 16.2 Endpoints
+
+All endpoints are owner-signed per §6 with **`path` = the URL path without query** (e.g. `/vault/<box>/blob/<id>`), and the signing fingerprint must equal `{box}` (401 otherwise).
+
+| Endpoint | Behaviour |
+|---|---|
+| `PUT /vault/{box}/blob/{id}` | raw body (`application/octet-stream`). Idempotent: `200 {"ok":true,"existed":true\|false[,"bytes":n]}`. Empty body 400; over 4 MiB 413; over quota `413 {"error":"vault quota exceeded"}` |
+| `POST /vault/{box}/has` | `{"ids":[…]}` (at most 10000, each a valid id, else 400) → `{"missing":[…]}` in request order. Present blobs get their grace clock refreshed (§16.3) |
+| `GET /vault/{box}/blob/{id}` | the blob bytes; `404 {"error":"no such blob"}` |
+| `GET /vault/{box}/head/{lane}` | `{lane, version, root, refs, device, updated}`; `404 {"error":"no such lane"}` |
+| `PUT /vault/{box}/head/{lane}` | `{prev_version, root, refs}`; compare-and-swap: `prev_version` must equal the current version (0 = the lane must not exist yet) → `200 {"ok":true,"head":{…}}` with `version = prev_version + 1`. Mismatch: `409 {"error":"version conflict","version":<current>,"root":<current root>}`. `root`, `refs` and every id `refs` names must be stored, else `422 {"error":"missing blobs","missing":[first 100 ids],"count":n}`; a refs blob that does not parse → `422 {"error":"refs blob is not a list of blob ids"}`. At most 64 lanes per mailbox |
+| `DELETE /vault/{box}/head/{lane}?prev_version=N` | drops the lane if it is at version N (409 conflict otherwise, `404 {"error":"no such lane"}`) |
+| `GET /vault/{box}/heads` | `{"heads":[…]}` every lane, sorted by lane; `[]` when none |
+| `GET /vault/{box}/usage` | `{bytes, blobs, quota}` |
+| `DELETE /vault/{box}` | purge: removes every blob and lane of the mailbox; device gate as lane `main`; idempotent → `200 {"ok":true,"bytes":<freed>,"blobs":<freed>}` |
+
+A mailbox that never used the vault answers 404 / empty lists / zero usage, never 500. A relay predating the vault answers a plain-text 404 for these paths; clients report that as `ErrVaultUnsupported`, distinct from "no such lane".
+
+### 16.3 Garbage collection and quota
+
+- Retained: for every lane, the current version and the previous two (`VaultKeepVersions = 3`): their `root`, their `refs` blob and every id their refs blob lists; plus every blob written, re-put or confirmed by `has` within the last **24 hours** (uploads in flight, and "has says present, skip the upload" decisions, are never undercut). Everything else may be deleted.
+- Runs asynchronously after a head update or delete (debounced 30 s, at most once per 10 minutes per mailbox), and synchronously once when an upload would exceed the quota. If any retained refs blob is unreadable the collection **aborts and deletes nothing**. Upload temp files older than 24 h are removed too.
+- Quota: per mailbox, default 10 GiB (`soulnet-relay -vault-quota`, binary units). Usage is rebuilt by scanning a mailbox's blobs the first time it is touched after a restart.
+- On disk: `<data>/vault/<box>/blobs/<id[:2]>/<id>`, `heads/<lane>.json` (atomic replace; also holds the retained older versions), `tmp/` (uploads in progress, renamed into place).
+
+### 16.4 Client (`a2a.ProxyClient`, mirrored on `peer.Peer`)
+
+`VaultPut(ctx, id, data) (existed bool, err)` · `VaultHas(ctx, ids) (missing, err)` (sent in batches of 10000) · `VaultGet(ctx, id) ([]byte, err)` · `VaultHead(ctx, lane) (*VaultHead, err)` (nil, nil when the lane does not exist) · `VaultHeads(ctx) ([]VaultHead, err)` · `VaultSetHead(ctx, lane, prevVersion, root, refs) (*VaultHead, err)` · `VaultDeleteHead(ctx, lane, prevVersion) err` · `VaultUsage(ctx) (*VaultUsage, err)` · `VaultPurge(ctx) err`. Errors: `*ErrKicked` (409 kicked), `*VaultConflictError` (`errors.Is ErrVaultConflict`), `ErrVaultQuota`, `*VaultMissingError` (`errors.Is ErrVaultMissing`), `ErrVaultNotFound`, `ErrVaultUnsupported`; other refusals stay reachable as `*RelayError`. Vault requests use their own timeout (`DefaultVaultTimeout` = 2 min).
+
+### 16.5 Security notes
+
+- The relay learns blob counts and sizes, write times, the set of ids each version references and which device wrote which lane. It learns no content and no file names.
+- As in §13.4, request signatures cover neither the body nor the query: a signature captured within the 5-minute window could be replayed against the same path with a different body (e.g. another `root` for `PUT …/head/main`) -- only over plain HTTP or with TLS broken. The CAS on `prev_version` limits such a replay to the version the victim was writing.
+- Blob ids are not verified against content. Nothing is lost by that: only holders of the identity key can write, and whoever holds the key already is the identity.
+
+---
+
 ## Appendix A. Constants at a glance
 
 | Constant | Value | Where |
@@ -700,6 +786,14 @@ with a pairwise `group_join` to the owner card. Local storage adds
 | seed | 1000 CL | `relaySeedCL` |
 | treasury default | 1e9 CL | `-treasury-init` |
 | card URI prefix | `soulmirror://card?` | `EncodeURI` |
+| device id *[added 2026-09-25]* | `^[A-Za-z0-9._~=-]{1,128}$` | `ValidDeviceID` |
+| handoff note *[added 2026-09-25]* | at most 4096 B | `MaxHandoffBytes` |
+| presence flush *[added 2026-09-25]* | once per minute per mailbox; 32 devices | `presenceFlushEvery`, `maxSeenDevices` |
+| vault blob *[added 2026-09-25]* | 1 B .. 4 MiB, id `^[0-9a-f]{64}$` | `MaxVaultBlobBytes`, `ValidVaultID` |
+| vault has batch *[added 2026-09-25]* | 10000 ids | `MaxVaultHasIDs` |
+| vault retention *[added 2026-09-25]* | 3 versions per lane + 24 h grace | `VaultKeepVersions`, `vaultGrace` |
+| vault quota *[added 2026-09-25]* | 10 GiB per mailbox | `DefaultVaultQuota`, `-vault-quota` |
+| vault lanes *[added 2026-09-25]* | `main`, `dev-<device>`; at most 64 | `ValidVaultLane` |
 
 ## Appendix B. Mapping to the product repository
 

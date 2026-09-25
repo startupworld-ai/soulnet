@@ -20,7 +20,7 @@
 | 目录 | 内容 |
 |---|---|
 | `a2a/` | 线协议层：Ed25519/X25519 密钥身份、名片 `soulmirror://card?…`、端到端 AES-GCM 信封、邮局客户端、好友/会话存储、附件分块、目录客户端、结算签名、任务类型 |
-| `relay/` + `cmd/soulnet-relay/` | 邮局**内核**：`/mail` 存转密文（+ `/presence`、`/health`、限频）与 opt-in 能力目录（`/directory/*`），仅此而已。极小扩展接口（`relay/ext.go`：`Handle` / `Use` / `Subscribe` / `AdminOK` / `VerifyRequest` / `DataDir`）让产品在同一监听上挂自己的服务而不必 fork 邮局——灵镜产品的隧道入口、应用广场、反馈板、创力账本、rshell 正是这样挂上去的。可自建 |
+| `relay/` + `cmd/soulnet-relay/` | 邮局**内核**：`/mail` 存转密文（+ `/presence`、`/health`、限频）、设备会话与在线状态（`/box/*`，同一身份同时只有一台活跃设备）、配对会合通道（`/rendezvous/*`）、按信箱隔离的加密备份保险库（`/vault/*`）与 opt-in 能力目录（`/directory/*`），仅此而已。极小扩展接口（`relay/ext.go`：`Handle` / `Use` / `Subscribe` / `AdminOK` / `VerifyRequest` / `DataDir`）让产品在同一监听上挂自己的服务而不必 fork 邮局——灵镜产品的隧道入口、应用广场、反馈板、创力账本、rshell 正是这样挂上去的。可自建 |
 | `ws/` `wsmux/` | 最小 WebSocket（RFC 6455）与多路复用帧 |
 | `peer/` + `cmd/soulnet/` | **灵网轻端**（soulnet light peer）：Go 包 `peer` + 可执行 `soulnet`（stdin/stdout 行分隔 JSON-RPC 2.0，24 个方法 / 7 种通知）——身份/名片/好友握手/收发/分块附件/typing/presence/目录；可 `--service` 注册为系统服务常驻收信。不含 LLM、wiki、采集。见 `cmd/soulnet/README.md` |
 | `spec/` | `a2a-wire-spec.md`（A2A Wire v2.0）+ `vectors/` 固定种子测试向量（`a2a/vectors_test.go` 回归校验） |
@@ -47,7 +47,7 @@ go build -o bin/soulnet ./cmd/soulnet
 
 - **身份 = 一对密钥**（Ed25519 签名、X25519 加密）；指纹 `base64url(SHA-256(ed_pub)[:16])` 就是路由地址。没有注册、没有账号。
 - **名片**是自签名的 `soulmirror://card?…` URI，带两把公钥、收信邮局和昵称；加好友 = 交换名片。
-- **邮局**（`soulnet-relay`）是只看得到密文的哑 store-and-forward 信箱：`POST /mail`、`GET /mail`（长轮询）、`POST /mail/ack`。它还挂着 opt-in 的能力**目录**。任何人可自建。（规范 §9 的创力账本/经济接口目前由灵镜产品的 relay 扩展提供，不在内核里；随协议 v3 开放。）
+- **邮局**（`soulnet-relay`）是只看得到密文的哑 store-and-forward 信箱：`POST /mail`、`GET /mail`（长轮询）、`POST /mail/ack`。它还挂着 opt-in 的能力**目录**、设备会话（同一身份同时只有一台活跃设备，规范 §15）和按信箱隔离、内容寻址的加密备份**保险库**（规范 §16；`-vault-quota`，缺省 10 GiB）。任何人可自建。（规范 §9 的创力账本/经济接口目前由灵镜产品的 relay 扩展提供，不在内核里；随协议 v3 开放。）
 - 默认公共邮局：`https://relay.startupworld.cn`。
 
 以上全部在 `spec/a2a-wire-spec.md` 里逐字节钉死；`spec/vectors/` 让任何实现都能自证合规。轻端的 JSON-RPC 接口见 `cmd/soulnet/README.md`。
