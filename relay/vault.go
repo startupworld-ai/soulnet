@@ -40,12 +40,17 @@
 // vaultGCEvery per mailbox) and synchronously once when an upload would exceed the quota.
 // It aborts, deleting nothing, if any retained refs blob is unreadable.
 //
-// Storage: dataDir/vault/<box>/blobs/<id[:2]>/<id>, heads/<lane>.json (atomic replace),
-// tmp/ (uploads in progress, renamed into place). Usage is counted by scanning a mailbox's
-// blobs the first time it is touched after start, then kept in memory.
+// Storage: blob bytes go to a VaultBlobStore (vaultstore.go; default: dataDir/vault/<box>/
+// blobs/<id[:2]>/<id>, uploads staged in tmp/). Metadata always stays on the relay's disk:
+// dataDir/vault/<box>/heads/<lane>.json (atomic replace) and index.jsonl, the blob index
+// (vaultindex.go: id -> size and write time). has, the completeness check of a head update,
+// quota and collection consult the index only; the store is read for GET blob and for refs
+// blobs, and written by uploads, collection and purge. A mailbox is loaded (heads + index,
+// usage summed from the index) the first time it is touched after start.
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,12 +104,18 @@ func (h *vaultHeadRec) public(lane string) a2a.VaultHead {
 }
 
 // vaultBox is the in-memory side of one mailbox's vault. mu serialises every mutation of
-// the box (uploads' final rename, head updates, collection) and every head read.
+// the box (index updates, head updates, collection, purge) and every head / index read.
+// Uploads store their bytes outside mu, holding a quota reservation meanwhile.
 type vaultBox struct {
 	mu          sync.Mutex
 	loaded      bool
-	bytes       int64
-	blobs       int64
+	index       map[string]vaultBlobMeta // stored blobs (vaultindex.go)
+	indexLines  int                      // lines in index.jsonl (compaction trigger)
+	bytes       int64                    // sum of index sizes
+	blobs       int64                    // len(index)
+	reserved    int64                    // bytes of uploads in flight (counted against the quota)
+	inflight    map[string]int           // ids of uploads in flight -> count
+	gen         uint64                   // bumped by purge: an upload that started before it is discarded
 	heads       map[string]*vaultHeadRec
 	lastGC      time.Time
 	gcScheduled bool
@@ -153,11 +164,32 @@ func ParseByteSize(v string) (int64, error) {
 	return n * mult, nil
 }
 
-func (s *Server) vaultBoxDir(box string) string { return filepath.Join(s.dataDir, "vault", box) }
-
-func (s *Server) vaultBlobPath(box, id string) string {
-	return filepath.Join(s.vaultBoxDir(box), "blobs", id[:2], id)
+// SetVaultBlobStore makes store hold the vault's blob bytes (nil restores the default disk
+// store). Call it before serving. Blobs the relay already kept on local disk are not
+// visible through another store until MigrateVaultBlobs moved them; until then the
+// mailboxes concerned answer 500 rather than report blobs the store does not hold.
+func (s *Server) SetVaultBlobStore(store VaultBlobStore) {
+	if store == nil {
+		store = s.vaultDisk
+	}
+	s.vMu.Lock()
+	s.vaultStore = store
+	s.vMu.Unlock()
 }
+
+func (s *Server) vaultBlobs() VaultBlobStore {
+	s.vMu.Lock()
+	defer s.vMu.Unlock()
+	return s.vaultStore
+}
+
+// vaultStoreIsDisk reports whether blobs live in this relay's own on-disk layout.
+func (s *Server) vaultStoreIsDisk() bool {
+	d, ok := s.vaultBlobs().(*DiskVaultBlobStore)
+	return ok && d.root == s.vaultDisk.root
+}
+
+func (s *Server) vaultBoxDir(box string) string { return filepath.Join(s.dataDir, "vault", box) }
 
 func (s *Server) vaultHeadPath(box, lane string) string {
 	return filepath.Join(s.vaultBoxDir(box), "heads", lane+".json")
@@ -175,36 +207,20 @@ func (s *Server) vaultBoxFor(box string) *vaultBox {
 	return vb
 }
 
-// vaultLoadLocked scans box's blobs (usage) and reads its heads the first time. A mailbox
-// without a vault directory loads as empty. Caller holds vb.mu.
+// vaultLoadLocked reads box's heads and blob index the first time (the index is rebuilt
+// from the on-disk blob layout when missing, see vaultLoadIndexLocked). A mailbox without
+// a vault directory loads as empty and creates no files. Caller holds vb.mu.
 func (s *Server) vaultLoadLocked(box string, vb *vaultBox) error {
+	return s.vaultLoadModeLocked(box, vb, false)
+}
+
+func (s *Server) vaultLoadModeLocked(box string, vb *vaultBox, migrate bool) error {
 	if vb.loaded {
 		return nil
 	}
-	var nBytes, nBlobs int64
-	err := filepath.WalkDir(filepath.Join(s.vaultBoxDir(box), "blobs"), func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		if d.IsDir() || !a2a.ValidVaultID(d.Name()) {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		nBytes += info.Size()
-		nBlobs++
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("vault: scan blobs: %w", err)
+	if err := s.vaultLoadIndexLocked(box, vb, migrate); err != nil {
+		vb.index = nil
+		return err
 	}
 	heads := map[string]*vaultHeadRec{}
 	entries, err := os.ReadDir(filepath.Join(s.vaultBoxDir(box), "heads"))
@@ -228,7 +244,8 @@ func (s *Server) vaultLoadLocked(box string, vb *vaultBox) error {
 		}
 		heads[lane] = &h
 	}
-	vb.bytes, vb.blobs, vb.heads, vb.loaded = nBytes, nBlobs, heads, true
+	vb.recount()
+	vb.heads, vb.loaded = heads, true
 	return nil
 }
 
@@ -274,18 +291,30 @@ func (s *Server) vaultOpen(w http.ResponseWriter, box string) *vaultBox {
 	return vb
 }
 
-// touch refreshes a blob's mtime (the garbage collector's "recently confirmed" clock).
-func touch(p string) {
-	now := time.Now()
-	_ = os.Chtimes(p, now, now)
-}
-
-func fileExists(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && info.Mode().IsRegular()
+// vaultTouchLocked resets the grace clock of the given stored blobs (index + log). A failed log
+// append only costs the persisted clock (the in-memory one is set), so it is logged, not
+// fatal. Caller holds vb.mu.
+func (s *Server) vaultTouchLocked(box string, vb *vaultBox, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	now := time.Now().Unix()
+	for _, id := range ids {
+		m := vb.index[id]
+		m.At = now
+		vb.index[id] = m
+	}
+	if err := s.vaultIndexAppendLocked(box, vb, vaultIndexRec{Touch: ids, At: now}); err != nil {
+		log.Printf("[relay] vault box=%s index touch failed: %v", a2a.ShortFp(box), err)
+	}
 }
 
 // vaultPutBlob: PUT /vault/{box}/blob/{id}, body = raw blob bytes.
+//
+// The body is read into memory (<= 4 MiB) and handed to the store outside the box lock;
+// meanwhile its size is reserved against the quota and the id is marked in flight (so a
+// collection never deletes it under the upload). The index learns the blob only after
+// the store has it.
 func (s *Server) vaultPutBlob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !a2a.ValidVaultID(id) {
@@ -300,83 +329,110 @@ func (s *Server) vaultPutBlob(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusRequestEntityTooLarge, "blob exceeds 4 MiB")
 		return
 	}
-	dst := s.vaultBlobPath(box, id)
 	quota := s.VaultQuota()
+	existed := func(vb *vaultBox) {
+		s.vaultTouchLocked(box, vb, []string{id})
+		vb.mu.Unlock()
+		WriteJSON(w, 200, map[string]any{"ok": true, "existed": true})
+	}
 
 	vb := s.vaultOpen(w, box)
 	if vb == nil {
 		return
 	}
-	if fileExists(dst) { // idempotent: already stored
-		touch(dst)
+	if _, ok := vb.index[id]; ok { // idempotent: already stored
+		s.vaultTouchLocked(box, vb, []string{id})
 		vb.mu.Unlock()
 		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, a2a.MaxVaultBlobBytes+1))
 		WriteJSON(w, 200, map[string]any{"ok": true, "existed": true})
 		return
 	}
-	if r.ContentLength > 0 && vb.bytes+r.ContentLength > quota && !s.vaultReclaimLocked(box, vb, r.ContentLength, quota) {
+	if r.ContentLength > 0 && vb.bytes+vb.reserved+r.ContentLength > quota && !s.vaultReclaimLocked(box, vb, r.ContentLength, quota) {
 		vb.mu.Unlock()
 		WriteError(w, http.StatusRequestEntityTooLarge, a2a.VaultQuotaCode)
 		return
 	}
 	vb.mu.Unlock()
 
-	// Stream into tmp/ outside the lock (a 4 MiB body on a slow link takes a while).
-	tmpDir := filepath.Join(s.vaultBoxDir(box), "tmp")
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		WriteError(w, 500, err.Error())
-		return
-	}
-	f, err := os.CreateTemp(tmpDir, "put-*")
+	// Read the body outside the lock (a 4 MiB body on a slow link takes a while).
+	data, err := io.ReadAll(io.LimitReader(r.Body, a2a.MaxVaultBlobBytes+1))
 	if err != nil {
-		WriteError(w, 500, err.Error())
-		return
-	}
-	tmp := f.Name()
-	n, err := io.Copy(f, io.LimitReader(r.Body, a2a.MaxVaultBlobBytes+1))
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
 		WriteError(w, 400, "failed to read blob body")
 		return
 	}
+	n := int64(len(data))
 	if n > a2a.MaxVaultBlobBytes {
-		_ = os.Remove(tmp)
 		WriteError(w, http.StatusRequestEntityTooLarge, "blob exceeds 4 MiB")
 		return
 	}
 	if n == 0 {
-		_ = os.Remove(tmp)
 		WriteError(w, 400, "empty blob")
 		return
 	}
 
 	vb.mu.Lock()
-	defer vb.mu.Unlock()
-	if fileExists(dst) { // a concurrent upload of the same id won
-		_ = os.Remove(tmp)
-		touch(dst)
-		WriteJSON(w, 200, map[string]any{"ok": true, "existed": true})
+	if !vb.loaded { // a failed purge left the box to be rescanned
+		if err := s.vaultLoadLocked(box, vb); err != nil {
+			vb.mu.Unlock()
+			WriteError(w, 500, err.Error())
+			return
+		}
+	}
+	if _, ok := vb.index[id]; ok { // a concurrent upload of the same id won
+		existed(vb)
 		return
 	}
-	if vb.bytes+n > quota && !s.vaultReclaimLocked(box, vb, n, quota) {
-		_ = os.Remove(tmp)
+	if vb.bytes+vb.reserved+n > quota && !s.vaultReclaimLocked(box, vb, n, quota) {
+		vb.mu.Unlock()
 		WriteError(w, http.StatusRequestEntityTooLarge, a2a.VaultQuotaCode)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		_ = os.Remove(tmp)
-		WriteError(w, 500, err.Error())
+	gen := vb.gen
+	vb.reserved += n
+	if vb.inflight == nil {
+		vb.inflight = map[string]int{}
+	}
+	vb.inflight[id]++
+	store := s.vaultBlobs()
+	vb.mu.Unlock()
+
+	putErr := store.Put(r.Context(), box, id, data)
+
+	vb.mu.Lock()
+	defer vb.mu.Unlock()
+	vb.reserved -= n
+	if vb.inflight[id]--; vb.inflight[id] <= 0 {
+		delete(vb.inflight, id)
+	}
+	if putErr != nil {
+		log.Printf("[relay] vault box=%s blob %s store put failed: %v", a2a.ShortFp(box), id[:8], putErr)
+		WriteError(w, 500, "failed to store blob")
 		return
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		WriteError(w, 500, err.Error())
+	if vb.gen != gen || !vb.loaded {
+		// The vault was purged while we uploaded: do not resurrect the blob. Drop our bytes
+		// unless the new vault already knows the id or another upload of it is in flight.
+		if _, ok := vb.index[id]; !ok && vb.inflight[id] == 0 {
+			if err := store.Delete(context.Background(), box, id); err != nil {
+				log.Printf("[relay] vault box=%s blob %s cleanup after purge failed: %v", a2a.ShortFp(box), id[:8], err)
+			}
+		}
+		WriteError(w, 500, "the vault was purged during the upload")
+		return
+	}
+	if _, ok := vb.index[id]; ok { // a concurrent upload of the same id finished first
+		s.vaultTouchLocked(box, vb, []string{id})
+		WriteJSON(w, 200, map[string]any{"ok": true, "existed": true})
+		return
+	}
+	at := time.Now().Unix()
+	vb.index[id] = vaultBlobMeta{Size: n, At: at}
+	if err := s.vaultIndexAppendLocked(box, vb, vaultIndexRec{Put: id, Size: n, At: at}); err != nil {
+		// Not indexed = not stored as far as the vault is concerned (the store copy is an
+		// invisible leftover that a retry overwrites).
+		delete(vb.index, id)
+		log.Printf("[relay] vault box=%s blob %s index append failed: %v", a2a.ShortFp(box), id[:8], err)
+		WriteError(w, 500, "failed to record blob")
 		return
 	}
 	vb.bytes += n
@@ -393,7 +449,7 @@ func (s *Server) vaultReclaimLocked(box string, vb *vaultBox, need, quota int64)
 	if _, err := s.vaultGCLocked(box, vb); err != nil {
 		log.Printf("[relay] vault box=%s gc on quota pressure failed: %v", a2a.ShortFp(box), err)
 	}
-	return vb.bytes+need <= quota
+	return vb.bytes+vb.reserved+need <= quota
 }
 
 // vaultGetBlob: GET /vault/{box}/blob/{id} -> the blob bytes (404 when not stored).
@@ -407,30 +463,37 @@ func (s *Server) vaultGetBlob(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	f, err := os.Open(s.vaultBlobPath(box, id))
+	vb := s.vaultOpen(w, box)
+	if vb == nil {
+		return
+	}
+	_, indexed := vb.index[id]
+	vb.mu.Unlock()
+	if !indexed {
+		WriteError(w, 404, a2a.VaultNoBlobCode)
+		return
+	}
+	data, err := s.vaultBlobs().Get(r.Context(), box, id)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, ErrVaultBlobNotFound) {
+			log.Printf("[relay] vault box=%s blob %s is indexed but the store has no bytes", a2a.ShortFp(box), id[:8])
 			WriteError(w, 404, a2a.VaultNoBlobCode)
 			return
 		}
-		WriteError(w, 500, err.Error())
-		return
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		WriteError(w, 500, err.Error())
+		log.Printf("[relay] vault box=%s blob %s store get failed: %v", a2a.ShortFp(box), id[:8], err)
+		WriteError(w, 500, "failed to read blob")
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(200)
-	_, _ = io.Copy(w, f)
+	_, _ = w.Write(data)
 }
 
 // vaultHas: POST /vault/{box}/has {"ids":[...]} -> {"missing":[...]} in request order.
-// Present blobs get their grace clock refreshed, so a client that skips uploading them
-// cannot lose them to a collection before it publishes the head that references them.
+// Answered from the index alone. Present blobs get their grace clock refreshed, so a
+// client that skips uploading them cannot lose them to a collection before it publishes
+// the head that references them.
 func (s *Server) vaultHas(w http.ResponseWriter, r *http.Request) {
 	box, ok := s.vaultAuth(w, r)
 	if !ok {
@@ -453,17 +516,24 @@ func (s *Server) vaultHas(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	vb := s.vaultBoxFor(box)
-	vb.mu.Lock() // exclude a concurrent collection between "present" and the touch
+	vb := s.vaultOpen(w, box) // holding the lock excludes a collection between "present" and the touch
+	if vb == nil {
+		return
+	}
 	missing := []string{}
+	var present []string
+	seen := map[string]bool{}
 	for _, id := range body.IDs {
-		p := s.vaultBlobPath(box, id)
-		if fileExists(p) {
-			touch(p)
+		if _, ok := vb.index[id]; ok {
+			if !seen[id] {
+				present = append(present, id)
+				seen[id] = true
+			}
 		} else {
 			missing = append(missing, id)
 		}
 	}
+	s.vaultTouchLocked(box, vb, present)
 	vb.mu.Unlock()
 	WriteJSON(w, 200, map[string]any{"missing": missing})
 }
@@ -621,18 +691,20 @@ func (s *Server) vaultPutHead(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, 400, fmt.Sprintf("too many lanes (at most %d per mailbox)", maxVaultLanes))
 		return
 	}
-	// The version must be complete: root, refs and everything refs names are stored.
+	// The version must be complete: root, refs and everything refs names are stored
+	// (per the index; only the refs blob itself is read from the store).
 	var missing []string
 	for _, id := range []string{body.Root, body.Refs} {
-		if !fileExists(s.vaultBlobPath(box, id)) {
+		if _, ok := vb.index[id]; !ok {
 			missing = append(missing, id)
 		}
 	}
 	if len(missing) == 0 {
-		raw, err := os.ReadFile(s.vaultBlobPath(box, body.Refs))
+		raw, err := s.vaultBlobs().Get(r.Context(), box, body.Refs)
 		if err != nil {
 			vb.mu.Unlock()
-			WriteError(w, 500, err.Error())
+			log.Printf("[relay] vault box=%s refs blob %s unreadable: %v", a2a.ShortFp(box), body.Refs[:8], err)
+			WriteError(w, 500, "failed to read the refs blob")
 			return
 		}
 		ids, err := a2a.ParseVaultRefs(raw)
@@ -643,7 +715,7 @@ func (s *Server) vaultPutHead(w http.ResponseWriter, r *http.Request) {
 		}
 		seen := map[string]bool{}
 		for _, id := range ids {
-			if !seen[id] && !fileExists(s.vaultBlobPath(box, id)) {
+			if _, ok := vb.index[id]; !ok && !seen[id] {
 				missing = append(missing, id)
 			}
 			seen[id] = true
@@ -733,7 +805,11 @@ func (s *Server) vaultDeleteHead(w http.ResponseWriter, r *http.Request) {
 // vaultPurge: DELETE /vault/{box} drops every blob and lane of box and resets its usage.
 // Active device only (409 kicked otherwise, legacy callers pass while nobody claimed the
 // mailbox). Idempotent: answers 200 with what was freed (zero when there was no vault).
-// An upload racing the purge fails (its temp file is gone) rather than resurrecting data.
+// An upload racing the purge fails rather than resurrecting data.
+//
+// Order: the index is emptied and the lanes dropped first, then the store deletes the
+// bytes. If the store fails, the vault is already empty to clients and the stray bytes
+// are invisible; a retried purge deletes them.
 func (s *Server) vaultPurge(w http.ResponseWriter, r *http.Request) {
 	box, ok := s.vaultAuth(w, r)
 	if !ok {
@@ -749,13 +825,37 @@ func (s *Server) vaultPurge(w http.ResponseWriter, r *http.Request) {
 	}
 	defer vb.mu.Unlock()
 	freedBytes, freedBlobs := vb.bytes, vb.blobs
-	if err := os.RemoveAll(s.vaultBoxDir(box)); err != nil {
-		vb.loaded = false // partially removed: rescan on next use instead of trusting the counters
-		log.Printf("[relay] vault box=%s purge failed: %v", a2a.ShortFp(box), err)
-		WriteError(w, 500, err.Error())
+	vb.gen++
+	fail := func(what string, err error) {
+		vb.loaded = false // partially removed: reload on next use instead of trusting memory
+		log.Printf("[relay] vault box=%s purge failed (%s): %v", a2a.ShortFp(box), what, err)
+		WriteError(w, 500, "purge failed: "+what)
+	}
+	dir := s.vaultBoxDir(box)
+	if _, err := os.Stat(dir); err == nil {
+		vb.index = map[string]vaultBlobMeta{}
+		if err := s.vaultIndexCompactLocked(box, vb); err != nil {
+			fail("index", err)
+			return
+		}
+		if err := os.RemoveAll(filepath.Join(dir, "heads")); err != nil {
+			fail("heads", err)
+			return
+		}
+	}
+	vb.index, vb.heads = map[string]vaultBlobMeta{}, map[string]*vaultHeadRec{}
+	vb.recount()
+	if err := s.vaultBlobs().DeleteBox(r.Context(), box); err != nil {
+		// Metadata is already empty (and stays loaded): clients see an empty vault.
+		log.Printf("[relay] vault box=%s purge: store delete failed, %d blob(s) left behind until a retry: %v", a2a.ShortFp(box), freedBlobs, err)
+		WriteError(w, 500, "purge failed: store")
 		return
 	}
-	vb.bytes, vb.blobs, vb.heads = 0, 0, map[string]*vaultHeadRec{}
+	if err := os.RemoveAll(dir); err != nil {
+		fail("metadata", err)
+		return
+	}
+	vb.indexLines = 0
 	log.Printf("[relay] vault box=%s purged (%d blob(s), %d bytes)", a2a.ShortFp(box), freedBlobs, freedBytes)
 	WriteJSON(w, 200, map[string]any{"ok": true, "bytes": freedBytes, "blobs": freedBlobs})
 }
@@ -826,19 +926,23 @@ func (s *Server) vaultGC(box string) (int, error) {
 	return s.vaultGCLocked(box, vb)
 }
 
-// vaultGCLocked deletes every blob of box that no retained lane version references and
-// that was not written / confirmed within vaultGrace, plus stale upload temp files.
-// Caller holds vb.mu.
+// vaultGCLocked deletes every indexed blob of box that no retained lane version
+// references, that was not written / confirmed within vaultGrace and that no upload has
+// in flight, plus stale upload temp files of the disk layout. The candidates come from
+// the index (the store is never listed); the refs blobs of retained versions are read
+// from the store. Their del line is logged before the store deletes them. Caller holds vb.mu.
 func (s *Server) vaultGCLocked(box string, vb *vaultBox) (int, error) {
 	vb.lastGC = time.Now()
 	if err := s.vaultLoadLocked(box, vb); err != nil {
 		return 0, err
 	}
+	store := s.vaultBlobs()
+	ctx := context.Background()
 	live := map[string]bool{}
 	for lane, h := range vb.heads {
 		for _, rev := range append([]vaultRev{h.vaultRev}, h.History...) {
 			live[rev.Root], live[rev.Refs] = true, true
-			raw, err := os.ReadFile(s.vaultBlobPath(box, rev.Refs))
+			raw, err := store.Get(ctx, box, rev.Refs)
 			if err != nil {
 				return 0, fmt.Errorf("gc aborted: refs of lane %s version %d unreadable: %w", lane, rev.Version, err)
 			}
@@ -851,43 +955,140 @@ func (s *Server) vaultGCLocked(box string, vb *vaultBox) (int, error) {
 			}
 		}
 	}
-	cutoff := time.Now().Add(-s.vaultGrace)
-	removed := 0
-	blobsDir := filepath.Join(s.vaultBoxDir(box), "blobs")
-	shards, _ := os.ReadDir(blobsDir)
-	for _, sh := range shards {
-		if !sh.IsDir() {
-			continue
+	cutoff := time.Now().Add(-s.vaultGrace).Unix()
+	var victims []string
+	for id, m := range vb.index {
+		if !live[id] && m.At < cutoff && vb.inflight[id] == 0 {
+			victims = append(victims, id)
 		}
-		shardDir := filepath.Join(blobsDir, sh.Name())
-		files, _ := os.ReadDir(shardDir)
-		left := len(files)
-		for _, f := range files {
-			id := f.Name()
-			if f.IsDir() || !a2a.ValidVaultID(id) || live[id] {
-				continue
+	}
+	sort.Strings(victims)
+	if len(victims) > 0 {
+		for _, id := range victims {
+			delete(vb.index, id)
+		}
+		if err := s.vaultIndexAppendLocked(box, vb, vaultIndexRec{Del: victims}); err != nil {
+			// Put them back: nothing is deleted from the store unless the index forgot it first.
+			if rerr := s.vaultLoadIndexLocked(box, vb, false); rerr != nil {
+				vb.loaded = false
 			}
-			info, err := f.Info()
-			if err != nil || info.ModTime().After(cutoff) {
-				continue
-			}
-			if os.Remove(filepath.Join(shardDir, id)) == nil {
-				vb.bytes -= info.Size()
-				vb.blobs--
-				removed++
-				left--
+			vb.recount()
+			return 0, fmt.Errorf("gc aborted: %w", err)
+		}
+		vb.recount()
+		for _, id := range victims {
+			if err := store.Delete(ctx, box, id); err != nil {
+				// Forgotten by the index already: the bytes are an invisible leftover.
+				log.Printf("[relay] vault box=%s gc: store delete of %s failed: %v", a2a.ShortFp(box), id[:8], err)
 			}
 		}
-		if left == 0 {
-			_ = os.Remove(shardDir) // only succeeds when empty
+		if err := s.vaultIndexCompactLocked(box, vb); err != nil {
+			log.Printf("[relay] vault box=%s gc: index compaction failed: %v", a2a.ShortFp(box), err)
 		}
 	}
 	tmpDir := filepath.Join(s.vaultBoxDir(box), "tmp")
 	tmps, _ := os.ReadDir(tmpDir)
 	for _, f := range tmps {
-		if info, err := f.Info(); err == nil && !f.IsDir() && info.ModTime().Before(cutoff) {
+		if info, err := f.Info(); err == nil && !f.IsDir() && info.ModTime().Unix() < cutoff {
 			_ = os.Remove(filepath.Join(tmpDir, f.Name()))
 		}
 	}
-	return removed, nil
+	return len(victims), nil
+}
+
+// VaultMigration is what MigrateVaultBlobs moved.
+type VaultMigration struct {
+	Boxes int   // mailboxes that had blobs on local disk
+	Blobs int   // blobs moved
+	Bytes int64 // bytes moved
+}
+
+// MigrateVaultBlobs moves every blob still kept in the on-disk layout
+// (dataDir/vault/<box>/blobs) into the configured VaultBlobStore and deletes the local
+// copies; the index keeps each blob's size and write time (it is rebuilt from the files
+// first when missing). It is a no-op when the configured store is the disk layout itself.
+// Call it after SetVaultBlobStore and before serving; it is idempotent and resumable (a
+// run cut short leaves the rest on disk, and those mailboxes answer 500 until a later run
+// finishes them). logf, when set, receives one line per mailbox moved.
+func (s *Server) MigrateVaultBlobs(ctx context.Context, logf func(format string, args ...any)) (VaultMigration, error) {
+	var out VaultMigration
+	if s.vaultStoreIsDisk() {
+		return out, nil
+	}
+	entries, err := os.ReadDir(filepath.Join(s.dataDir, "vault"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return out, nil
+		}
+		return out, err
+	}
+	for _, e := range entries {
+		box := e.Name()
+		if !e.IsDir() || !SafeBox(box) || !s.vaultDisk.hasBlobsDir(box) {
+			continue
+		}
+		n, b, err := s.vaultMigrateBox(ctx, box)
+		out.Blobs += n
+		out.Bytes += b
+		if n > 0 || err == nil {
+			out.Boxes++
+		}
+		if err != nil {
+			return out, fmt.Errorf("vault: migrate box %s: %w", a2a.ShortFp(box), err)
+		}
+		if logf != nil {
+			logf("vault box=%s: moved %d blob(s), %d bytes from local disk to the vault store", a2a.ShortFp(box), n, b)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) vaultMigrateBox(ctx context.Context, box string) (int, int64, error) {
+	vb := s.vaultBoxFor(box)
+	vb.mu.Lock()
+	defer vb.mu.Unlock()
+	if err := s.vaultLoadModeLocked(box, vb, true); err != nil {
+		return 0, 0, err
+	}
+	store := s.vaultBlobs()
+	moved, bytes := 0, int64(0)
+	err := s.vaultDisk.walk(box, func(id string, size int64, mod time.Time) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, err := s.vaultDisk.Get(ctx, box, id)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			return s.vaultDisk.Delete(ctx, box, id) // never a valid blob
+		}
+		if err := store.Put(ctx, box, id, data); err != nil {
+			return err
+		}
+		if _, ok := vb.index[id]; !ok { // stored but never indexed (crash before the put line)
+			vb.index[id] = vaultBlobMeta{Size: int64(len(data)), At: mod.Unix()}
+			if err := s.vaultIndexAppendLocked(box, vb, vaultIndexRec{Put: id, Size: int64(len(data)), At: mod.Unix()}); err != nil {
+				delete(vb.index, id)
+				return err
+			}
+		}
+		if err := s.vaultDisk.Delete(ctx, box, id); err != nil {
+			return err
+		}
+		moved++
+		bytes += int64(len(data))
+		return nil
+	})
+	vb.recount()
+	if err != nil {
+		return moved, bytes, err
+	}
+	if err := s.vaultDisk.DeleteBox(ctx, box); err != nil {
+		return moved, bytes, err
+	}
+	if err := s.vaultIndexCompactLocked(box, vb); err != nil {
+		return moved, bytes, err
+	}
+	return moved, bytes, nil
 }

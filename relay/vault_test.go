@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -95,16 +96,28 @@ func (f *deviceFixture) usage(t *testing.T) a2a.VaultUsage {
 	return u
 }
 
-// age backdates a blob past the collection grace period.
+// age backdates a blob (its index write time) past the collection grace period.
 func (f *deviceFixture) age(t *testing.T, id string) {
 	t.Helper()
-	old := time.Now().Add(-vaultGrace - time.Hour)
-	if err := os.Chtimes(f.s.vaultBlobPath(f.box, id), old, old); err != nil {
-		t.Fatal(err)
+	vb := f.s.vaultBoxFor(f.box)
+	vb.mu.Lock()
+	defer vb.mu.Unlock()
+	m, ok := vb.index[id]
+	if !ok {
+		t.Fatalf("age: blob %s is not indexed", id[:8])
 	}
+	m.At = time.Now().Add(-vaultGrace - time.Hour).Unix()
+	vb.index[id] = m
 }
 
-func (f *deviceFixture) stored(id string) bool { return fileExists(f.s.vaultBlobPath(f.box, id)) }
+// diskBlobPath is where the default store keeps a blob of the fixture mailbox.
+func (f *deviceFixture) diskBlobPath(id string) string { return f.s.vaultDisk.blobPath(f.box, id) }
+
+// stored reports whether the configured store holds the blob.
+func (f *deviceFixture) stored(id string) bool {
+	_, err := f.s.vaultBlobs().Get(context.Background(), f.box, id)
+	return err == nil
+}
 
 func TestVaultRequiresOwnerSignature(t *testing.T) {
 	f := newVaultFixture(t)
@@ -503,7 +516,7 @@ func TestVaultGCAbortsOnUnreadableRefs(t *testing.T) {
 	}
 	junk := f.putBlob(t, "", []byte("junk"))
 	f.age(t, junk)
-	if err := os.Remove(f.s.vaultBlobPath(f.box, refs)); err != nil {
+	if err := os.Remove(f.diskBlobPath(refs)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.vaultGC(f.box); err == nil {

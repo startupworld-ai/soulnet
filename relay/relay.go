@@ -60,13 +60,15 @@ type Server struct {
 	// Device presence (presence.go): when each device of a mailbox was last seen.
 	presenceState
 
-	// vMu guards vboxes (mailbox -> vault state) and vaultQuota (see vault.go).
+	// vMu guards vboxes (mailbox -> vault state), vaultQuota and vaultStore (see vault.go).
 	vMu          sync.Mutex
 	vboxes       map[string]*vaultBox
-	vaultQuota   int64         // per-mailbox vault quota in bytes (default DefaultVaultQuota)
-	vaultGrace   time.Duration // recently written / confirmed blobs survive collection (default vaultGrace)
-	vaultGCDelay time.Duration // debounce of the collection after a head update (< 0 disables it)
-	vaultGCEvery time.Duration // minimum spacing of collections per mailbox
+	vaultQuota   int64               // per-mailbox vault quota in bytes (default DefaultVaultQuota)
+	vaultGrace   time.Duration       // recently written / confirmed blobs survive collection (default vaultGrace)
+	vaultGCDelay time.Duration       // debounce of the collection after a head update (< 0 disables it)
+	vaultGCEvery time.Duration       // minimum spacing of collections per mailbox
+	vaultDisk    *DiskVaultBlobStore // the on-disk blob layout (default store; source of MigrateVaultBlobs)
+	vaultStore   VaultBlobStore      // where blob bytes live (default vaultDisk, see SetVaultBlobStore)
 
 	// Capability directory: isolated from the dumb-pipe logic.
 	dir *Directory
@@ -117,6 +119,8 @@ func New(dataDir string) (*Server, error) {
 		vaultGCDelay: vaultGCDelay,
 		vaultGCEvery: vaultGCEvery,
 	}
+	s.vaultDisk = NewDiskVaultBlobStore(dataDir)
+	s.vaultStore = s.vaultDisk
 	s.dir.afterPublish = func(fp string) { s.emit(Event{Kind: EventDirectoryPublished, FP: fp}) }
 	s.resetRendezvous()
 	s.mountCore()
