@@ -709,6 +709,12 @@ Kicked = `409 {"error":"kicked","active_device":…,"active_name":…,"since":"<
 
 Every request that passes the owner check of §6 (`fingerprint == box`) and carries a valid `X-Soulnet-Device` sets `last_seen = now` for that device (and its name when the name header is present) -- whether or not the device gate then kicks it. `POST /mail` does **not** count: it is authenticated by the envelope signature, and anyone holding a signed envelope can re-post it. Presence is kept in memory and written to `<data>/active/<box>.devices.json` at most once a minute per mailbox and when the relay shuts down (`Server.Flush`); at most 32 devices per mailbox are remembered (the longest-unseen is dropped). Client: `ProxyClient.Heartbeat` / `Devices`, `peer.Heartbeat` / `Devices`.
 
+### 15.4 Rendezvous on the local network *[added 2026-09-27]*
+
+The rendezvous protocol is not tied to the relay: a device may serve it itself on the LAN (`peer.LANRendezvous`, `peer.ListenLAN`) so two devices on the same network exchange a pairing bundle directly. The routes, bodies, status codes and limits are exactly those of `/rendezvous/{id}` above (limits are the constants `a2a.RendezvousMaxBlob` / `RendezvousMaxTotal` / `RendezvousMaxWait`), so the other device uses the ordinary client pointed at `http://<lan-ip>:<port>`. Differences: storage is in memory only and capped across the service as well as per rendezvous; only ids starting with a prefix the owner allowed are served, **every other request answers 404**; a long poll on a rendezvous that gets deleted returns an empty list at once. It authenticates nobody -- payloads must be sealed end-to-end by the caller exactly as for the relay -- and is meant to live for one pairing only.
+
+Client timeouts (both relay and LAN): `ProxyClient.RendezvousGet` waits at most `min(wait, 55) + 15` s for the response headers and puts **no** deadline on the body (a window may be tens of MB on a slow link); the caller bounds the whole read with its context.
+
 ---
 
 ## 16. Vault: encrypted backup storage per mailbox *[added 2026-09-25]*
