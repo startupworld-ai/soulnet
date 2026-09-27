@@ -8,6 +8,11 @@
 //	GET    /rendezvous/{id}?since=<seq>&wait=<s>          {"items":[{seq,data}]} with seq > since, long-polls up to a2a.RendezvousMaxWait s
 //	DELETE /rendezvous/{id}                               drop the rendezvous
 //
+// plus one extension the relay does not have (yet): a GET that sends
+// Accept: a2a.RendezvousItemsBinary gets the items as binary frames instead of base64 in JSON
+// (a2a/rendezvous_binary.go) -- on a LAN, decoding a data window from JSON costs the reader
+// more than moving it. a2a.ProxyClient asks for it and falls back on the JSON reply.
+//
 // so the receiving device talks to it with a plain a2a.NewProxyClient("http://<lan-ip>:<port>", nil)
 // and its RendezvousPut / RendezvousGet / RendezvousDelete -- no dedicated client. The
 // sending device skips HTTP and calls Put / Get / Delete in process; their signatures match
@@ -515,6 +520,15 @@ func (l *LANRendezvous) httpGet(w http.ResponseWriter, r *http.Request, id strin
 	items, err := l.Get(r.Context(), id, since, wait)
 	if err != nil && r.Context().Err() != nil {
 		return // the reader went away
+	}
+	if err == nil && a2a.AcceptsRendezvousBinary(r.Header.Get("Accept")) {
+		// Binary frames instead of base64 in JSON (a2a/rendezvous_binary.go): a data window is
+		// tens of MB, and decoding it from JSON costs the reader more than the LAN transfer.
+		w.Header().Set("Content-Type", a2a.RendezvousItemsBinary)
+		w.Header().Set("Content-Length", strconv.Itoa(a2a.RendezvousItemsBinarySize(items)))
+		w.WriteHeader(http.StatusOK)
+		_ = a2a.WriteRendezvousItemsBinary(w, items)
+		return
 	}
 	l.writeResult(w, err, map[string]any{"items": items})
 }

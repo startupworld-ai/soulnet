@@ -232,6 +232,8 @@ func (c *ProxyClient) RendezvousGet(ctx context.Context, id string, since int64,
 	if err != nil {
 		return nil, err
 	}
+	// Ask for the binary reply (rendezvous_binary.go); servers that do not know it answer JSON.
+	req.Header.Set("Accept", RendezvousItemsBinary+", application/json;q=0.9")
 	wait := min(max(waitSec, 0), RendezvousMaxWait)
 	headerTimeout := time.Duration(wait)*time.Second + rendezvousHeaderSlack
 	var headerTimedOut atomic.Bool
@@ -252,6 +254,9 @@ func (c *ProxyClient) RendezvousGet(ctx context.Context, id string, since int64,
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return nil, apiErr(resp)
+	}
+	if IsRendezvousBinary(resp.Header.Get("Content-Type")) {
+		return ReadRendezvousItemsBinary(resp.Body)
 	}
 	var out struct {
 		Items []RendezvousItem `json:"items"`

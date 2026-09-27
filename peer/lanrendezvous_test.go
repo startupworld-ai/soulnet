@@ -3,6 +3,7 @@ package peer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -276,6 +277,68 @@ func TestLANRendezvousHTTPWithProxyClient(t *testing.T) {
 	}
 	if err := pc.RendezvousPut(ctx, lanID, 1, []byte("x")); err == nil {
 		t.Fatal("closed service must not accept connections")
+	}
+}
+
+// A GET asking for a2a.RendezvousItemsBinary gets binary frames; a plain GET (an older
+// client) still gets the relay's JSON; errors stay JSON either way.
+func TestLANRendezvousServesBinaryOnRequest(t *testing.T) {
+	l := NewLANRendezvous(lanPrefix)
+	if err := l.Listen("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	base := "http://" + l.Addr().String()
+	ctx := context.Background()
+	big := bytes.Repeat([]byte{0x5A}, 300000)
+	if err := l.Put(ctx, lanID, 1, big); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Put(ctx, lanID, 2, []byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	get := func(id, accept string) *http.Response {
+		req, _ := http.NewRequest("GET", base+"/rendezvous/"+id+"?since=0&wait=0", nil)
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	resp := get(lanID, a2a.RendezvousItemsBinary)
+	items, err := a2a.ReadRendezvousItemsBinary(resp.Body)
+	resp.Body.Close()
+	if !a2a.IsRendezvousBinary(resp.Header.Get("Content-Type")) || err != nil || fmt.Sprint(seqsOf(items)) != "[1 2]" || !bytes.Equal(items[0].Data, big) {
+		t.Fatalf("binary reply: ct=%q %v %v", resp.Header.Get("Content-Type"), seqsOf(items), err)
+	}
+	if resp.ContentLength != int64(a2a.RendezvousItemsBinarySize(items)) {
+		t.Fatalf("Content-Length %d", resp.ContentLength)
+	}
+
+	resp = get(lanID, "")
+	var out struct {
+		Items []a2a.RendezvousItem `json:"items"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") || err != nil || len(out.Items) != 2 || !bytes.Equal(out.Items[0].Data, big) {
+		t.Fatalf("json reply for a plain GET: ct=%q %v", resp.Header.Get("Content-Type"), err)
+	}
+
+	resp = get("someone-elses-id", a2a.RendezvousItemsBinary)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("errors stay JSON: %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	// And the stock client gets the binary form transparently.
+	got, err := a2a.NewProxyClient(base, nil).RendezvousGet(ctx, lanID, 1, 0)
+	if err != nil || fmt.Sprint(seqsOf(got)) != "[2]" || string(got[0].Data) != "two" {
+		t.Fatalf("proxy client: %v %v", seqsOf(got), err)
 	}
 }
 
