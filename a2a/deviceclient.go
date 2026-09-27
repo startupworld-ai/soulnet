@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/startupworld-ai/soulnet/ws"
@@ -185,23 +187,65 @@ func (c *ProxyClient) RendezvousPut(ctx context.Context, id string, seq int64, d
 	return nil
 }
 
+// rendezvousHeaderSlack is how long RendezvousGet waits for the response headers beyond
+// the long-poll wait itself (a package variable so tests can shrink it).
+var rendezvousHeaderSlack = 15 * time.Second
+
+// rendezvousHTTP returns the client for RendezvousGet: RendezvousHTTP when set, otherwise
+// one WITHOUT an overall timeout sharing HTTP's transport. A rendezvous read may carry a
+// whole window of tens of MB; an overall client timeout (DefaultPollTimeout covers the
+// body download too) cuts such a read on any link slower than about 1 MB/s, and every
+// retry is cut at the same place. RendezvousGet bounds the wait for the response headers
+// itself; how long the body may take is the caller's ctx.
+func (c *ProxyClient) rendezvousHTTP() *http.Client {
+	if c.RendezvousHTTP != nil {
+		return c.RendezvousHTTP
+	}
+	var tr http.RoundTripper
+	if c.HTTP != nil {
+		tr = c.HTTP.Transport
+	}
+	return &http.Client{Transport: tr}
+}
+
+// ErrRendezvousHeaderTimeout is returned (wrapped) by RendezvousGet when the server does
+// not start answering within the long-poll wait plus a grace period.
+var ErrRendezvousHeaderTimeout = errors.New("rendezvous: timed out waiting for response headers")
+
 // RendezvousGet returns the blobs stored at id with seq > since, in seq order
-// (GET /rendezvous/{id}?since=&wait=). waitSec > 0 long-polls (the relay caps it at 55 s)
-// using the long-poll HTTP client; an unknown rendezvous yields an empty list, not an error.
+// (GET /rendezvous/{id}?since=&wait=). waitSec > 0 long-polls (servers cap it at
+// RendezvousMaxWait); an unknown rendezvous yields an empty list, not an error.
+//
+// Timeouts: the response headers must arrive within min(waitSec, RendezvousMaxWait) + 15 s
+// (connection setup included), otherwise the call fails with ErrRendezvousHeaderTimeout.
+// Once the server answers, the body (possibly tens of MB) is read with no deadline of its
+// own -- bound the whole call with ctx. The client's HTTP / ShortHTTP timeouts do not apply
+// (their transport does); set RendezvousHTTP to override the client entirely.
 func (c *ProxyClient) RendezvousGet(ctx context.Context, id string, since int64, waitSec int) ([]RendezvousItem, error) {
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("rendezvous id must not be empty")
 	}
 	u := fmt.Sprintf("%s/rendezvous/%s?since=%d&wait=%d", c.Base, url.PathEscape(id), since, waitSec)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // also ends the body read below
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
-	hc := c.shortHTTP()
-	if waitSec > 0 {
-		hc = c.HTTP
+	wait := min(max(waitSec, 0), RendezvousMaxWait)
+	headerTimeout := time.Duration(wait)*time.Second + rendezvousHeaderSlack
+	var headerTimedOut atomic.Bool
+	timer := time.AfterFunc(headerTimeout, func() {
+		headerTimedOut.Store(true)
+		cancel()
+	})
+	resp, err := c.rendezvousHTTP().Do(req)
+	if !timer.Stop() && headerTimedOut.Load() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return nil, fmt.Errorf("%w (%s)", ErrRendezvousHeaderTimeout, headerTimeout)
 	}
-	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}

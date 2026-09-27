@@ -23,7 +23,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"time"
@@ -34,19 +33,17 @@ import (
 const (
 	// rendezvousIdle is the inactivity after which a rendezvous and its blobs are dropped.
 	rendezvousIdle = 10 * time.Minute
-	// maxRendezvousBlob caps one decoded blob.
-	maxRendezvousBlob = 4 << 20
+	// maxRendezvousBlob caps one decoded blob (wire limit shared with the client, see a2a).
+	maxRendezvousBlob = a2a.RendezvousMaxBlob
 	// maxRendezvousTotal caps the decoded bytes of one rendezvous.
-	maxRendezvousTotal = 64 << 20
+	maxRendezvousTotal = a2a.RendezvousMaxTotal
 	// maxRendezvousBody bounds the JSON request body (base64 inflates the blob by 4/3, plus framing).
 	maxRendezvousBody = maxRendezvousBlob/3*4 + 4096
 )
 
-// rendezvousIDRe: rendezvous ids are derived tokens, URL and file-name safe, 8..64 characters.
-var rendezvousIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
-
-// ValidRendezvousID reports whether id is acceptable as a rendezvous id.
-func ValidRendezvousID(id string) bool { return rendezvousIDRe.MatchString(id) }
+// ValidRendezvousID reports whether id is acceptable as a rendezvous id (same rule as
+// a2a.ValidRendezvousID, kept here for existing callers).
+func ValidRendezvousID(id string) bool { return a2a.ValidRendezvousID(id) }
 
 // rvState is the in-memory side of one rendezvous (the blobs are on disk).
 type rvState struct {
@@ -195,8 +192,8 @@ func (s *Server) rendezvousGet(w http.ResponseWriter, r *http.Request) {
 	}
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	wait, _ := strconv.Atoi(r.URL.Query().Get("wait"))
-	if wait > 55 {
-		wait = 55
+	if wait > a2a.RendezvousMaxWait {
+		wait = a2a.RendezvousMaxWait
 	}
 	deadline := time.Now().Add(time.Duration(wait) * time.Second)
 	for {

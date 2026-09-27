@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -60,6 +61,23 @@ type RendezvousItem struct {
 	Seq  int64  `json:"seq"`
 	Data []byte `json:"data"`
 }
+
+// Limits of the pairing rendezvous wire protocol, shared by every server of it (the
+// relay's /rendezvous/{id} and peer.LANRendezvous) and by the client.
+const (
+	// RendezvousMaxBlob caps one decoded blob.
+	RendezvousMaxBlob = 4 << 20
+	// RendezvousMaxTotal caps the decoded bytes one rendezvous may hold.
+	RendezvousMaxTotal = 64 << 20
+	// RendezvousMaxWait caps the long-poll wait of GET /rendezvous/{id}, in seconds.
+	RendezvousMaxWait = 55
+)
+
+// rendezvousIDRe: rendezvous ids are derived tokens, URL and file-name safe, 8..64 characters.
+var rendezvousIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+
+// ValidRendezvousID reports whether id is acceptable as a rendezvous id.
+func ValidRendezvousID(id string) bool { return rendezvousIDRe.MatchString(id) }
 
 // ErrKicked is the relay's verdict that ANOTHER device of this identity is the active one
 // (HTTP 409 {"error":"kicked", ...}). The caller must stop touching the mailbox -- no retry

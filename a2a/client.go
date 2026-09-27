@@ -46,6 +46,11 @@ type ProxyClient struct {
 	// VaultHTTP serves the vault requests (vaultclient.go); nil = a client with
 	// DefaultVaultTimeout sharing HTTP's transport.
 	VaultHTTP *http.Client
+
+	// RendezvousHTTP serves RendezvousGet; nil = a client with NO overall timeout sharing
+	// HTTP's transport (RendezvousGet bounds the wait for the response headers itself and
+	// leaves the body download to the caller's ctx, see deviceclient.go).
+	RendezvousHTTP *http.Client
 }
 
 // WithDevice makes the client identify itself as device id (name is the human-readable
