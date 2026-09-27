@@ -1529,6 +1529,15 @@ func (n *Peer) applyRoster(ctx context.Context, st *a2a.GroupState, next *a2a.Gr
 	if next.Version <= st.Roster.Version {
 		return false
 	}
+	if n.GroupLeftReason(gid) == "dissolved" {
+		// A dissolution is terminal: the owner has forgotten the group and nobody can
+		// re-admit me to it. In a staged dissolution (see GroupDissolveNotify) the owner
+		// keeps republishing the roster while it kicks legacy members one by one, and
+		// those intermediate versions still list me - taking one for a re-admission would
+		// clear the marker and bring a dead group back to life, and once the roster is
+		// unpublished the relay answers 404, so no later refresh would freeze it again.
+		return false
+	}
 	me := n.Fingerprint()
 	if next.Member(me) == nil {
 		// I was removed. The group and its archive stay on disk read-only: the newest
