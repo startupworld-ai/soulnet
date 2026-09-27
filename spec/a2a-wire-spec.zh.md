@@ -336,12 +336,12 @@ HTTP 头：
 
 ### 7.6 客户端收发循环（参考实现行为，`ProxyClient`）
 
-`Deliver`：对名片 `proxy` 列表逐个 `POST /mail`，任一成功即成功；全失败则进本地 `outbox/` 重试。`Poll(wait=25..55)` → 逐件 `handleEnvelope`（找发件方 X 公钥：好友名片快照 → 否则 `from_xpub` → 否则判「毒信」丢弃并 ack）→ `Open` → 按 `type` 分发 → `Ack`。无法处理且非暂时性错误的件也 ack 掉，避免死循环。
+`Deliver`：对名片 `proxy` 列表逐个 `POST /mail`，任一成功即成功；全失败则进本地 `outbox/` 重试——除非每个邮局给的都是永久判决（4xx，408 / 425 / 429 除外；409 被踢另行处理），这时不入队、当场失败（`ErrUndeliverable`）：同样的字节再投多少次也是被拒。*[2026-09-27 新增]*`Poll(wait=25..55)` → 逐件 `handleEnvelope`（找发件方 X 公钥：好友名片快照 → 否则 `from_xpub` → 否则判「毒信」丢弃并 ack）→ `Open` → 按 `type` 分发 → `Ack`。无法处理且非暂时性错误的件也 ack 掉，避免死循环。
 
 *[2026-08-22 新增]*
 - **超时**：客户端保留两档 HTTP 超时——长轮询（`Poll`）`DefaultPollTimeout = 70 s`，短请求（`Deliver` / `Ack` / `Presence`）`DefaultDeliverTimeout = 15 s`（`ProxyClient.WithDeliverTimeout`）。短超时内没完成的投递即为失败、进 `outbox/`；不得等到长轮询预算耗尽。
 - **收方校验**（`OpenFrom(env, myX, theirX)`）：推荐的收信路径即便邮局已验过也再复核一次外层签名（`VerifyEnvelope`），解密后再要求 `message.from == Fingerprint(envelope.from)`；任一不符都是永久性错误（丢弃 + ack）。单独的 `Open` 仍是不做检查的原语。轻端使用 `OpenFrom`。
-- **outbox 重放**：按文件名顺序重放，遇到第一个仍失败的即停（下一轮再试）；损坏的文件直接删除。格式见 §12。
+- **outbox 重放**：按文件名顺序重放，遇到第一个仍临时失败的即停（下一轮再试）；损坏的文件直接删除。*[2026-09-27 新增]* 每个邮局都给永久判决（见 `Deliver`）的文件移出队列、交给宿主（`Peer.OnUndeliverable`），不再重试——否则它会一直敲邮局，还堵住排在后面的所有信。格式见 §12。
 
 ---
 
@@ -448,11 +448,11 @@ relay 校验顺序：`from_pub` 32 B → `Fingerprint(from_pub)==from_fp`（否�
 
 ### 10.1 inline
 
-原始字节 ≤ `MaxArtifactBytes = 700 × 1024 = 716800` → 直接 `artifact = base64std(bytes)` + `artifact_name` 随任意消息发（base64 后约 956 KB，留在邮局 1 MiB 体上限内）。接收方落盘到 `a2a/artifacts/<peer>/<msgID>__<name>`（`peer`、`msgID` 经 `SanitizeID`），并把存档里的 `artifact` 清空。
+原始字节 ≤ `MaxArtifactBytes = 512 × 1024 = 524288` → 直接 `artifact = base64std(bytes)` + `artifact_name` 随任意消息发。上线时字节要过两层 base64（消息 JSON 一层、`Envelope.cipher` 一层）：512 KiB → 约 932 KB，留在邮局 1 MiB 体上限内，并给正文与信封留出余量。*[2026-09-27 改：原为 716800，第二层 base64 后超 1 MiB——约 575 KiB 以上的 inline 附件都被 400 拒收。接收方不受影响，发送方只是更早改走分块。]*接收方落盘到 `a2a/artifacts/<peer>/<msgID>__<name>`（`peer`、`msgID` 经 `SanitizeID`），并把存档里的 `artifact` 清空。
 
-### 10.2 分块（> 700 KiB）
+### 10.2 分块（> 512 KiB）
 
-- `ChunkRawBytes = 512 × 1024 = 524288`；`ChunkTotal(size) = ceil(size / 524288)`；`ShouldChunk(size) = size > 716800`。
+- `ChunkRawBytes = 512 × 1024 = 524288`；`ChunkTotal(size) = ceil(size / 524288)`；`ShouldChunk(size) = size > 524288`（发送方把消息正文长度也算进 `size`，正文很长时贴着上限的文件也照样放得下）。
 - `artifact_id = hex(16 随机字节)`（32 字符）；`artifact_sha = SHA-256 hex(整文件)`；`artifact_size = 原始字节数`。
 - 发送：先发一条**公告**（`mission_update` 或 `text`，带 `artifact_id/artifact_name/chunk_total/artifact_sha/artifact_size`，`artifact` 为空），再按序发 `chunk_total` 条 `type=artifact_chunk`，每条自包含同一组元数据 + `chunk_index` + 本块 base64。任一条失败进 outbox 重试，可能乱序/重复到达。
 - 接收：按 `msg.id` 去重；校验 `artifact_id != ""`、`0 ≤ chunk_index < chunk_total`；块写 `<index>.part`（重复覆盖）；集齐后按 index 拼接 → 若 `artifact_sha` 非空则比对 SHA-256（不符：保留暂存、不落盘、记错误）→ 落盘到 `a2a/artifacts/<peer>/<artifact_id>__<name>`。
@@ -683,7 +683,7 @@ profile 是花名册的一个字段（`profile`，omitempty），随花名册一
 | 客户端短请求超时 *[2026-08-22 新增]* | 15 s | `DefaultDeliverTimeout` |
 | 消息 ID 形状 *[2026-08-22 新增]* | `<fp[:6]>-<%019d ns>-<%012d seq>` | `NewMessageID` |
 | outbox 文件名 *[2026-08-22 新增]* | `<%019d ns>-<%012d seq>.json` | `WriteOutbox` |
-| inline 附件上限 | 716800 B | `MaxArtifactBytes` |
+| inline 附件上限 | 524288 B | `MaxArtifactBytes` |
 | 分块大小 | 524288 B | `ChunkRawBytes` |
 | 群 inline 附件上限 *[2026-09-27 新增]* | 393216 B | `GroupMaxArtifactBytes` |
 | 群分块大小 *[2026-09-27 新增]* | 393216 B | `GroupChunkRawBytes` |

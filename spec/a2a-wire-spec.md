@@ -340,12 +340,12 @@ No authentication. `{"online": true|false}`: the mailbox is online if it issued 
 
 ### 7.6 Client send/receive loop (reference behaviour, `ProxyClient`)
 
-`Deliver`: `POST /mail` to each entry of the card's `proxy` list in turn; success on the first that succeeds; if all fail the envelope goes to the local `outbox/` for retry. `Poll(wait=25..55)` → `handleEnvelope` per item (find the sender's X public key: friend card snapshot → else `from_xpub` → else classify as "poison mail", drop and ack) → `Open` → dispatch by `type` → `Ack`. Items that cannot be handled for a non-transient reason are acked too, to avoid an endless loop.
+`Deliver`: `POST /mail` to each entry of the card's `proxy` list in turn; success on the first that succeeds; if all fail the envelope goes to the local `outbox/` for retry — unless every relay answered with a permanent verdict (a 4xx other than 408 / 425 / 429; 409 kicked is handled on its own), in which case the envelope is not queued and the send fails right away (`ErrUndeliverable`): the same bytes would be refused again forever. *[added 2026-09-27]* `Poll(wait=25..55)` → `handleEnvelope` per item (find the sender's X public key: friend card snapshot → else `from_xpub` → else classify as "poison mail", drop and ack) → `Open` → dispatch by `type` → `Ack`. Items that cannot be handled for a non-transient reason are acked too, to avoid an endless loop.
 
 *[added 2026-08-22]*
 - **Timeouts**: the client keeps two HTTP timeout tiers — long-poll (`Poll`) `DefaultPollTimeout = 70 s` and short requests (`Deliver` / `Ack` / `Presence`) `DefaultDeliverTimeout = 15 s` (`ProxyClient.WithDeliverTimeout`). A delivery that does not complete within the short timeout is a failure and goes to `outbox/`; it must not wait the long-poll budget.
 - **Receiver verification** (`OpenFrom(env, myX, theirX)`): the recommended receive path re-verifies the outer signature (`VerifyEnvelope`) even though the relay already did, decrypts, and then requires `message.from == Fingerprint(envelope.from)`; any mismatch is a permanent error (drop + ack). `Open` alone remains the unchecked primitive. The light peer uses `OpenFrom`.
-- **Outbox replay**: files are replayed in file-name order, stopping at the first one that still fails (retry next round); malformed files are removed. Format in §12.
+- **Outbox replay**: files are replayed in file-name order, stopping at the first one that still fails temporarily (retry next round); malformed files are removed. *[added 2026-09-27]* A file whose every relay gives a permanent verdict (see `Deliver`) is removed from the queue and handed to the host (`Peer.OnUndeliverable`) instead of being retried — it would otherwise hammer the relay and block everything queued behind it. Format in §12.
 
 ---
 
@@ -452,11 +452,11 @@ No authentication (except `_platform`). `{"fp","entries":[settleEntry…]}`, `se
 
 ### 10.1 Inline
 
-Raw size ≤ `MaxArtifactBytes = 700 × 1024 = 716800` → send `artifact = base64std(bytes)` + `artifact_name` directly on any message (about 956 KB after base64, within the relay's 1 MiB body limit). The receiver writes it to `a2a/artifacts/<peer>/<msgID>__<name>` (`peer` and `msgID` pass through `SanitizeID`) and clears `artifact` in the archive.
+Raw size ≤ `MaxArtifactBytes = 512 × 1024 = 524288` → send `artifact = base64std(bytes)` + `artifact_name` directly on any message. The bytes are base64'd twice on the wire (message JSON, then `Envelope.cipher`): 512 KiB → about 932 KB, within the relay's 1 MiB body limit with room for text and envelope. *[changed 2026-09-27: was 716800, which overflows the 1 MiB body after the second base64 — inline files above ~575 KiB were refused with 400. Receivers are unaffected; senders simply chunk earlier.]* The receiver writes it to `a2a/artifacts/<peer>/<msgID>__<name>` (`peer` and `msgID` pass through `SanitizeID`) and clears `artifact` in the archive.
 
-### 10.2 Chunked (> 700 KiB)
+### 10.2 Chunked (> 512 KiB)
 
-- `ChunkRawBytes = 512 × 1024 = 524288`; `ChunkTotal(size) = ceil(size / 524288)`; `ShouldChunk(size) = size > 716800`.
+- `ChunkRawBytes = 512 × 1024 = 524288`; `ChunkTotal(size) = ceil(size / 524288)`; `ShouldChunk(size) = size > 524288` (a sender counts the message text into `size`, so a long text plus a file just under the limit still fits).
 - `artifact_id = hex(16 random bytes)` (32 chars); `artifact_sha = SHA-256 hex(whole file)`; `artifact_size = raw byte count`.
 - Sending: first an **announcement** (`mission_update` or `text`, carrying `artifact_id/artifact_name/chunk_total/artifact_sha/artifact_size`, `artifact` empty), then `chunk_total` messages of `type=artifact_chunk` in order, each self-contained with the same metadata + `chunk_index` + this chunk's base64. Any failure goes to the outbox for retry; chunks may arrive out of order or duplicated.
 - Receiving: dedupe by `msg.id`; check `artifact_id != ""` and `0 ≤ chunk_index < chunk_total`; write the chunk to `<index>.part` (duplicates overwrite); once complete, concatenate by index → if `artifact_sha` is non-empty compare SHA-256 (mismatch: keep the staging files, do not finalize, record the error) → write to `a2a/artifacts/<peer>/<artifact_id>__<name>`.
@@ -802,7 +802,7 @@ A mailbox that never used the vault answers 404 / empty lists / zero usage, neve
 | client short-request timeout *[added 2026-08-22]* | 15 s | `DefaultDeliverTimeout` |
 | message-ID shape *[added 2026-08-22]* | `<fp[:6]>-<%019d ns>-<%012d seq>` | `NewMessageID` |
 | outbox file name *[added 2026-08-22]* | `<%019d ns>-<%012d seq>.json` | `WriteOutbox` |
-| inline attachment limit | 716800 B | `MaxArtifactBytes` |
+| inline attachment limit | 524288 B | `MaxArtifactBytes` |
 | chunk size | 524288 B | `ChunkRawBytes` |
 | group inline attachment limit *[added 2026-09-27]* | 393216 B | `GroupMaxArtifactBytes` |
 | group chunk size *[added 2026-09-27]* | 393216 B | `GroupChunkRawBytes` |

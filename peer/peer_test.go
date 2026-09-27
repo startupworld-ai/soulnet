@@ -207,7 +207,7 @@ func TestChunkedFileTransfer(t *testing.T) {
 	b := newTestNode(t, rl, "bob")
 	befriend(t, a, b)
 
-	raw := make([]byte, 900*1024) // > 700KB → 2 chunks
+	raw := make([]byte, 900*1024) // > 512KB → 2 chunks
 	if _, err := rand.Read(raw); err != nil {
 		t.Fatal(err)
 	}

@@ -78,6 +78,13 @@ type Peer struct {
 	// OnHeartbeat is called by the Run loop with a Heartbeat* kind so a host can watch
 	// the loop's liveness (watchdog, health endpoint) without running a loop of its own.
 	OnHeartbeat func(kind string)
+	// OnUndeliverable is called when the Run loop drops a queued envelope that every relay
+	// refused for good (ErrUndeliverable: a 4xx other than 408 / 425 / 429). The file is
+	// already out of the outbox when this returns; name is its outbox file name, err wraps
+	// the relay's verdict. The host decides what to keep and how to tell its owner - the
+	// kernel only guarantees such an envelope is neither retried forever nor dropped
+	// silently (it is always logged).
+	OnUndeliverable func(name string, item *a2a.OutboxItem, err error)
 
 	// DeviceID / DeviceName identify THIS device of the identity to the relay (device
 	// sessions: one identity on several machines, one active at a time). When DeviceID is
