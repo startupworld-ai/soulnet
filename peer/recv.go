@@ -407,31 +407,44 @@ func (n *Peer) handleArtifactChunk(msg *a2a.Message) error {
 	if n.Convs.Seen(peer, msg.ID) {
 		return nil
 	}
-	if msg.ArtifactID == "" || msg.ChunkTotal <= 0 || msg.ChunkIndex < 0 || msg.ChunkIndex >= msg.ChunkTotal || msg.ArtifactName == "" {
-		return permanent(fmt.Errorf("invalid chunk (artifactID=%q index=%d total=%d)", msg.ArtifactID, msg.ChunkIndex, msg.ChunkTotal))
-	}
-	if strings.ContainsAny(msg.ArtifactName, `/\`) || strings.Contains(msg.ArtifactName, "..") {
-		return permanent(fmt.Errorf("invalid chunk attachment name"))
-	}
-	raw, err := base64.StdEncoding.DecodeString(msg.Artifact)
+	complete, err := n.stageArtifactChunk(peer, msg)
 	if err != nil {
-		return permanent(fmt.Errorf("chunk base64 decode failed"))
-	}
-	dir := n.IncomingDir(peer, msg.ArtifactID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(msg.ChunkIndex)+".part"), raw, 0o644); err != nil {
 		return err
 	}
 	// Record a tiny dedupe line in the conversation jsonl (Conversation() filters it out).
 	_ = n.Convs.Append(peer, &a2a.ConvEntry{Dir: "in", Message: a2a.Message{
 		ID: msg.ID, From: peer, To: msg.To, TS: msg.TS, Type: a2a.TypeArtifactChunk,
 		ArtifactID: msg.ArtifactID, ChunkIndex: msg.ChunkIndex, ChunkTotal: msg.ChunkTotal}})
-	if CountParts(dir) < msg.ChunkTotal {
+	if !complete {
 		return nil
 	}
 	return n.reassemble(peer, msg.ArtifactID, msg.ArtifactName, msg.ChunkTotal, msg.ArtifactSHA)
+}
+
+// stageArtifactChunk validates one artifact_chunk and writes its part to
+// IncomingDir(dirPeer, artifactID)/<index>.part (a duplicate overwrites). Reports whether
+// every part of the transfer is now staged. Malformed chunks are permanent errors.
+// dirPeer is the artifacts-directory key: the friend's fingerprint pairwise,
+// GroupArtifactPeer(gid) for group posts.
+func (n *Peer) stageArtifactChunk(dirPeer string, msg *a2a.Message) (bool, error) {
+	if msg.ArtifactID == "" || msg.ChunkTotal <= 0 || msg.ChunkIndex < 0 || msg.ChunkIndex >= msg.ChunkTotal || msg.ArtifactName == "" {
+		return false, permanent(fmt.Errorf("invalid chunk (artifactID=%q index=%d total=%d)", msg.ArtifactID, msg.ChunkIndex, msg.ChunkTotal))
+	}
+	if !a2a.ValidArtifactName(msg.ArtifactName) {
+		return false, permanent(fmt.Errorf("invalid chunk attachment name"))
+	}
+	raw, err := base64.StdEncoding.DecodeString(msg.Artifact)
+	if err != nil {
+		return false, permanent(fmt.Errorf("chunk base64 decode failed"))
+	}
+	dir := n.IncomingDir(dirPeer, msg.ArtifactID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(msg.ChunkIndex)+".part"), raw, 0o644); err != nil {
+		return false, err
+	}
+	return CountParts(dir) >= msg.ChunkTotal, nil
 }
 
 // CountParts counts the staged .part files in a chunk staging directory.
@@ -455,29 +468,39 @@ func CountParts(dir string) int {
 // (permanent: acked — redelivering the same chunk would not change the outcome, and the
 // dedupe line prevents a re-trigger anyway; the log shows it).
 func (n *Peer) reassemble(peer, artifactID, name string, total int, wantSHA string) error {
-	dir := n.IncomingDir(peer, artifactID)
+	p, err := n.assembleArtifact(peer, artifactID, name, total, wantSHA)
+	if err != nil || p == "" {
+		return err
+	}
+	n.emit(Event{Kind: EventArtifactReady, Peer: peer, TS: time.Now(), ArtifactPath: p, ArtifactName: name, ArtifactID: artifactID})
+	return nil
+}
+
+// assembleArtifact is reassemble without the event: it returns the final path, or ""
+// with a nil error while a part is still missing. dirPeer as in stageArtifactChunk.
+func (n *Peer) assembleArtifact(dirPeer, artifactID, name string, total int, wantSHA string) (string, error) {
+	dir := n.IncomingDir(dirPeer, artifactID)
 	var buf []byte
 	for i := 0; i < total; i++ {
 		part, err := os.ReadFile(filepath.Join(dir, strconv.Itoa(i)+".part"))
 		if err != nil {
-			return nil // missing part: reassemble when the next chunk arrives
+			return "", nil // missing part: reassemble when the next chunk arrives
 		}
 		buf = append(buf, part...)
 	}
 	if wantSHA != "" {
 		if got := a2a.SHA256Hex(buf); got != wantSHA {
 			n.logf("large file %s: sha256 mismatch after reassembly (want=%s got=%s), staging dir kept for inspection", name, wantSHA, got)
-			return permanent(fmt.Errorf("chunk reassembly sha256 check failed"))
+			return "", permanent(fmt.Errorf("chunk reassembly sha256 check failed"))
 		}
 	}
-	p := n.PersistArtifactBytes(peer, artifactID, name, buf)
+	p := n.PersistArtifactBytes(dirPeer, artifactID, name, buf)
 	if p == "" {
-		return fmt.Errorf("write after reassembly failed")
+		return "", fmt.Errorf("write after reassembly failed")
 	}
 	_ = os.RemoveAll(dir)
 	n.logf("large file %s reassembled (%d chunks, %d KB)", name, total, len(buf)/1024)
-	n.emit(Event{Kind: EventArtifactReady, Peer: peer, TS: time.Now(), ArtifactPath: p, ArtifactName: name, ArtifactID: artifactID})
-	return nil
+	return p, nil
 }
 
 // ——— typing mark ———

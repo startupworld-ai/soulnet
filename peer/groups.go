@@ -63,6 +63,9 @@ type GroupSummary struct {
 	Count    int    `json:"count"`
 	LastTs   int64  `json:"last_ts,omitempty"` // unix ms of the last archived entry
 	LastBody string `json:"last_body,omitempty"`
+	// LastArtifact is the attachment file name of the last archived entry (a group post may
+	// carry a file and no text), so list rows can preview it.
+	LastArtifact string `json:"last_artifact,omitempty"`
 	// Profile is the governance profile off the roster (nil on pre-profile groups), so
 	// list rows can gate composers without fetching every group.
 	Profile *a2a.GroupProfile `json:"profile,omitempty"`
@@ -138,6 +141,7 @@ func (n *Peer) GroupSummaryOf(st *a2a.GroupState) GroupSummary {
 	if last != nil {
 		s.LastTs = last.TS.UnixMilli()
 		s.LastBody = last.Body
+		s.LastArtifact = last.ArtifactName
 	}
 	return s
 }
@@ -710,11 +714,61 @@ type GroupSendOptions struct {
 	// Agent names which of this seat's agents composed a by=alter post (display
 	// provenance, e.g. "DevBot"; empty = the default alter). Governance reads By.
 	Agent string
+	// Attachment is one in-memory file posted with the message (nil = none). Up to
+	// a2a.GroupMaxArtifactBytes it rides inline; larger files become a chunk
+	// announcement followed by artifact_chunk fan-outs (§14.8). Capped at
+	// MaxGroupFileBytes.
+	Attachment *Attachment
+	// File is the path of a local file to attach instead of Attachment (validated and
+	// read with LoadSendFile under MaxGroupFileBytes).
+	File string
+}
+
+// MaxGroupFileBytes caps the raw size of one group attachment. Lower than the pairwise
+// MaxSendFileBytes on purpose: every chunk is copied into every member's mailbox, and
+// the relay rate-limits a sender to 240 envelopes per minute (10 MiB = 27 chunks).
+const MaxGroupFileBytes = 10 << 20
+
+// GroupArtifactPeer is the artifacts-directory key of one group: attachments of group
+// posts live under a2a/artifacts/<GroupConvKey(gid)>/<key>__<name>, next to (and never
+// colliding with) the per-friend directories. Use it with ArtifactPath / ArtifactFile.
+func GroupArtifactPeer(gid string) string { return a2a.GroupConvKey(gid) }
+
+// groupAttachment resolves the attachment of one group send (nil = none) and enforces
+// the name and size rules.
+func groupAttachment(opts GroupSendOptions) (*Attachment, error) {
+	att := opts.Attachment
+	if strings.TrimSpace(opts.File) != "" {
+		name, raw, err := LoadSendFile(opts.File, MaxGroupFileBytes)
+		if err != nil {
+			return nil, err
+		}
+		att = &Attachment{Name: name, Raw: raw}
+	}
+	if att == nil {
+		return nil, nil
+	}
+	if len(att.Raw) == 0 {
+		return nil, fmt.Errorf("%w: empty attachment", ErrBadFile)
+	}
+	if len(att.Raw) > MaxGroupFileBytes {
+		return nil, fmt.Errorf("%w (%d bytes > %d)", ErrArtifactSize, len(att.Raw), MaxGroupFileBytes)
+	}
+	if !a2a.ValidArtifactName(att.Name) {
+		return nil, fmt.Errorf("%w: invalid attachment name", ErrBadFile)
+	}
+	return att, nil
 }
 
 // GroupSend encrypts body once with my sender chain and posts ONE group envelope; the
 // relay fans it out to the other members. The roster profile is enforced locally first
 // (AllowSpeak); every receiver enforces it again on its side.
+//
+// With an attachment (opts.Attachment / opts.File) the body may be empty. A small file
+// rides inline; a large one turns the post into a chunk announcement followed by
+// artifact_chunk fan-outs (res.Chunks > 0). Either way the sender keeps a copy under
+// ArtifactPath(GroupArtifactPeer(gid), key, name) so its own UI can show it. A failed
+// chunk marks the whole post "error": receivers could not complete the file.
 func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOptions) (*SendResult, error) {
 	if !n.HasIdentity() {
 		return nil, ErrNoIdentity
@@ -723,9 +777,13 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 	if st == nil {
 		return nil, ErrNoGroup
 	}
+	att, err := groupAttachment(opts)
+	if err != nil {
+		return nil, err
+	}
 	body = strings.TrimSpace(body)
-	if body == "" {
-		return nil, fmt.Errorf("%w: body must not be empty", ErrBadFile)
+	if body == "" && att == nil {
+		return nil, fmt.Errorf("%w: body and attachment cannot both be empty", ErrBadFile)
 	}
 	if n.GroupLeft(gid) {
 		return nil, ErrGroupLeft
@@ -737,10 +795,27 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 	ctx = ctxOrBackground(ctx)
 	msg := &a2a.Message{ID: n.newMsgID(), From: me, GID: gid, TS: time.Now(), Type: a2a.TypeText,
 		Body: body, By: opts.By, Auto: opts.Auto, Agent: opts.Agent}
+	var chunks [][]byte
+	if att != nil {
+		msg.ArtifactName = att.Name
+		msg.ArtifactSize = int64(len(att.Raw))
+		// The body shares the envelope with an inline file, so it counts against the
+		// inline budget too (conservatively, as if it were raw bytes).
+		if a2a.GroupShouldChunk(len(att.Raw) + len(body)) {
+			chunks = a2a.SplitChunksOf(att.Raw, a2a.GroupChunkRawBytes)
+			msg.ArtifactID = a2a.NewArtifactID()
+			msg.ChunkTotal = len(chunks)
+			msg.ArtifactSHA = a2a.SHA256Hex(att.Raw)
+			n.PersistArtifactBytes(GroupArtifactPeer(gid), msg.ArtifactID, att.Name, att.Raw)
+		} else {
+			msg.Artifact = base64.StdEncoding.EncodeToString(att.Raw)
+			n.PersistArtifactBytes(GroupArtifactPeer(gid), msg.ID, att.Name, att.Raw)
+		}
+	}
 	// Lazy card sync (see cards.go): ride my re-signed card on this post while some
 	// co-member still holds an older version.
 	cardSig := n.attachGroupCard(st, msg)
-	res := &SendResult{ID: msg.ID, Status: "sent"}
+	res := &SendResult{ID: msg.ID, Status: "sent", Chunks: len(chunks)}
 	if err := n.fanOutGroup(ctx, st, msg); err != nil {
 		n.logf("group %s: fan-out delivery failed: %v", a2a.ShortFp(gid), err)
 		res.Status = "error"
@@ -748,15 +823,122 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 	} else {
 		n.logf("<<< group mail gid=%s id=%s by=%s", a2a.ShortFp(gid), msg.ID, msg.By)
 		n.markGroupCardSent(st, cardSig)
+		if len(chunks) > 0 {
+			if err := n.fanOutGroupChunks(ctx, st, msg, chunks); err != nil {
+				n.logf("group %s: attachment %s chunk delivery failed: %v", a2a.ShortFp(gid), msg.ArtifactName, err)
+				res.Status = "error"
+			}
+		}
 	}
 	stored := *msg
-	stored.Card = nil // my own card has no business in my archive
+	stored.Card = nil    // my own card has no business in my archive
+	stored.Artifact = "" // the bytes live on disk, never in the archive
 	seq, err := n.Convs.AppendSeq(a2a.GroupConvKey(gid), &a2a.ConvEntry{Dir: "out", Message: stored, Status: res.Status})
 	if err != nil {
 		return nil, err
 	}
 	res.Seq = seq
 	return res, nil
+}
+
+// fanOutGroupChunks posts the artifact_chunk fan-outs that follow a chunk announcement,
+// in order, each self-contained (same metadata + index + this part's base64). Stops at
+// the first failure: group fan-out has no outbox, and later parts could not complete
+// the file anyway.
+func (n *Peer) fanOutGroupChunks(ctx context.Context, st *a2a.GroupState, announce *a2a.Message, chunks [][]byte) error {
+	for i, c := range chunks {
+		chunk := &a2a.Message{
+			ID: n.newMsgID(), From: announce.From, GID: announce.GID, TS: time.Now(),
+			Type:         a2a.TypeArtifactChunk,
+			By:           announce.By,
+			Agent:        announce.Agent,
+			ArtifactID:   announce.ArtifactID,
+			ArtifactName: announce.ArtifactName,
+			ChunkIndex:   i,
+			ChunkTotal:   announce.ChunkTotal,
+			ArtifactSHA:  announce.ArtifactSHA,
+			ArtifactSize: announce.ArtifactSize,
+			Artifact:     base64.StdEncoding.EncodeToString(c),
+		}
+		if err := n.fanOutGroup(ctx, st, chunk); err != nil {
+			return fmt.Errorf("chunk %d/%d: %w", i+1, len(chunks), err)
+		}
+	}
+	n.logf("group %s: attachment %s sent in %d chunks (%d KB)", a2a.ShortFp(announce.GID), announce.ArtifactName, len(chunks), announce.ArtifactSize/1024)
+	return nil
+}
+
+// clearArtifact drops every attachment field of a message (an attachment we will not
+// or cannot keep must not show up as one).
+func clearArtifact(m *a2a.Message) {
+	m.Artifact, m.ArtifactName, m.ArtifactID, m.ArtifactSHA = "", "", "", ""
+	m.ChunkIndex, m.ChunkTotal, m.ArtifactSize = 0, 0, 0
+}
+
+// acceptGroupAttachment handles the attachment of a received group post (stored is the
+// copy about to be archived): an inline file is written to disk and its base64 dropped
+// from the archive; a chunk announcement keeps its metadata (the parts follow as
+// artifact_chunk fan-outs) and is assembled right away when the parts outran it.
+// Unsafe names and undecodable bytes drop the attachment (the text, if any, stays).
+// Returns the on-disk path when the file is already complete, "" otherwise.
+func (n *Peer) acceptGroupAttachment(gid string, stored *a2a.Message) string {
+	if stored.ArtifactName == "" {
+		stored.Artifact = ""
+		return ""
+	}
+	if !a2a.ValidArtifactName(stored.ArtifactName) {
+		n.logf("group %s: dropping attachment with an unsafe name %q", a2a.ShortFp(gid), stored.ArtifactName)
+		clearArtifact(stored)
+		return ""
+	}
+	dirPeer := GroupArtifactPeer(gid)
+	if stored.Artifact != "" {
+		raw, err := base64.StdEncoding.DecodeString(stored.Artifact)
+		stored.Artifact = ""
+		if err != nil || len(raw) == 0 {
+			n.logf("group %s: dropping undecodable inline attachment %q", a2a.ShortFp(gid), stored.ArtifactName)
+			clearArtifact(stored)
+			return ""
+		}
+		stored.ArtifactSize = int64(len(raw)) // what landed on disk, not what the sender claimed
+		return n.PersistArtifactBytes(dirPeer, stored.ID, stored.ArtifactName, raw)
+	}
+	if stored.ArtifactID == "" || stored.ChunkTotal <= 0 {
+		clearArtifact(stored) // a name without bytes and without a transfer: nothing will ever arrive
+		return ""
+	}
+	if CountParts(n.IncomingDir(dirPeer, stored.ArtifactID)) >= stored.ChunkTotal {
+		p, err := n.assembleArtifact(dirPeer, stored.ArtifactID, stored.ArtifactName, stored.ChunkTotal, stored.ArtifactSHA)
+		if err != nil {
+			n.logf("group %s: attachment %s: %v", a2a.ShortFp(gid), stored.ArtifactName, err)
+		}
+		return p
+	}
+	return ""
+}
+
+// handleGroupArtifactChunk stages one part of a large group attachment under
+// IncomingDir(GroupArtifactPeer(gid), artifactID); the last part assembles the file,
+// checks its sha256 and emits EventArtifactReady (GID set). A part arriving after the
+// file is complete (redelivery) is ignored.
+func (n *Peer) handleGroupArtifactChunk(gid, senderFp string, msg *a2a.Message) error {
+	dirPeer := GroupArtifactPeer(gid)
+	if msg.ArtifactID != "" && a2a.ValidArtifactName(msg.ArtifactName) {
+		if _, err := os.Stat(n.ArtifactPath(dirPeer, msg.ArtifactID, msg.ArtifactName)); err == nil {
+			return nil
+		}
+	}
+	complete, err := n.stageArtifactChunk(dirPeer, msg)
+	if err != nil || !complete {
+		return err
+	}
+	p, err := n.assembleArtifact(dirPeer, msg.ArtifactID, msg.ArtifactName, msg.ChunkTotal, msg.ArtifactSHA)
+	if err != nil || p == "" {
+		return err
+	}
+	n.emit(Event{Kind: EventArtifactReady, GID: gid, Peer: senderFp, TS: time.Now(), ArtifactPath: p,
+		ArtifactName: msg.ArtifactName, ArtifactID: msg.ArtifactID})
+	return nil
 }
 
 // GroupTyping fans out a "this seat is working here" signal (agent = which of my
@@ -1648,21 +1830,30 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		}
 		stored := *msg
 		stored.Body = a2a.StripControlMarkers(stored.Body)
-		if stored.Body == "" {
+		artPath := n.acceptGroupAttachment(gid, &stored)
+		if stored.Body == "" && stored.ArtifactName == "" {
 			return nil
 		}
 		seq, err := n.Convs.AppendSeq(key, &a2a.ConvEntry{Dir: "in", Message: stored})
 		if err != nil {
 			return err
 		}
-		n.logf("[grp-debug] RECEIVED text gid=%s sender=%s seq=%d bytes=%d", a2a.ShortFp(gid), a2a.ShortFp(senderFp), seq, len(stored.Body))
+		n.logf("[grp-debug] RECEIVED text gid=%s sender=%s seq=%d bytes=%d attachment=%q", a2a.ShortFp(gid), a2a.ShortFp(senderFp), seq, len(stored.Body), stored.ArtifactName)
 		if msg.Card != nil {
 			// The sender piggybacked its (possibly renamed) card: verify, cache, refresh
 			// the friend snapshot, converge the roster when I own the group (cards.go).
 			n.absorbGroupCard(context.Background(), st, senderFp, msg.Card)
 		}
-		n.emit(Event{Kind: EventGroupMessage, GID: gid, Peer: senderFp, TS: time.Now(), Message: &stored, Seq: seq})
+		n.emit(Event{Kind: EventGroupMessage, GID: gid, Peer: senderFp, TS: time.Now(), Message: &stored, Seq: seq, ArtifactPath: artPath})
 		return nil
+	case a2a.TypeArtifactChunk:
+		// One part of a large group attachment (§14.8). Same governance as the post it
+		// belongs to; never archived (the announcement is the visible entry).
+		if err := st.Roster.AllowSpeak(senderFp, msg.By); err != nil {
+			n.logf("group %s: dropping attachment chunk from %s: %v", a2a.ShortFp(gid), a2a.ShortFp(senderFp), err)
+			return nil
+		}
+		return n.handleGroupArtifactChunk(gid, senderFp, msg)
 	default:
 		n.logf("group %s: unknown fan-out type %q (ignored)", a2a.ShortFp(gid), msg.Type)
 		return nil

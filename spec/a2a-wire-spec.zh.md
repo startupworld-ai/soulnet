@@ -646,6 +646,19 @@ profile 是花名册的一个字段（`profile`，omitempty），随花名册一
 
 入群链接：`soulmirror://group?gid=…&relay=…[&name=…]`（`EncodeGroupURI` / `ParseGroupURI`）。陌生人凭链接到该邮局 `GET /group/card` 取公开名片，再向群主名片点对点发 `group_join` 申请。本地存储新增 `groups/<gid>/pins.json`（置顶公告）与群主节点上的 `groups/<gid>/applications/<fp>.json`（待审批申请）。
 
+### 14.8 群发言附件 *[2026-09-27 新增]*
+
+群 `text` 发言可带一个文件，字段同 §4.2、语义同 §10，只是走群扇出而不是点对点投信。此时正文可以为空。
+
+- **为什么阈值不同**：群信封比点对点信多一层 base64（消息 JSON → 密文 blob `c` → `Envelope.cipher`，§14.2–14.3），原始字节上线后约膨胀 2.37 倍，照搬点对点阈值会超出 `POST /group/mail` 的 1 MiB 请求体上限。群发言 inline 上限 `GroupMaxArtifactBytes = 384 × 1024 = 393216`，每块 `GroupChunkRawBytes = 393216`。
+- **inline**（原始大小 + 正文长度 ≤ `393216`）：发言带 `artifact` + `artifact_name` + `artifact_size`。接收端把字节写到 `a2a/artifacts/g_<gid>/<msgID>__<name>`，`artifact_size` 记实际落盘字节数，存档里清空 `artifact`。
+- **分块**（更大）：发言本身是公告（`artifact_id/artifact_name/chunk_total/artifact_sha/artifact_size`，`artifact` 为空），随后 `chunk_total` 条 `type=artifact_chunk` 的群扇出（同样的元数据 + `chunk_index` + 本块 base64；`by`/`agent` 抄自发言）。接收端把块暂存在 `a2a/artifacts/g_<gid>/.incoming/<artifact_id>/`，按 §10.2 拼成 `a2a/artifacts/g_<gid>/<artifact_id>__<name>`。块帧**不入存档**、不计未读；文件已拼好后再到的块直接忽略；块先于公告到达时，公告落地即拼。
+- **治理**：`AllowSpeak(sender, by)` 对块帧与对发言一样执行（§14.7）。
+- **文件名**：`artifact_name` 须过 `ValidArtifactName`（1–200 字节；不含 `/`、`\`、`:`、`..` 与控制字符；不能是 `.`）。不过的附件接收端直接丢弃（正文保留）——点对点信件同样适用。
+- **大小上限**：单个文件 `MaxGroupFileBytes = 10 MiB`（每一块都要复制进每个成员的信箱，且邮局对单个发件人限 240 封/分钟）。
+- **群扇出没有 outbox**：公告或任一块投不出去，发送端把这条发言以 `status = "error"` 入档。
+- **老版本接收端**：带正文的发言照常入档但看不到文件，纯附件（正文为空）的发言被丢弃；`artifact_chunk` 扇出被忽略。
+
 ---
 
 ## 附录 A. 常量速查
@@ -672,6 +685,10 @@ profile 是花名册的一个字段（`profile`，omitempty），随花名册一
 | outbox 文件名 *[2026-08-22 新增]* | `<%019d ns>-<%012d seq>.json` | `WriteOutbox` |
 | inline 附件上限 | 716800 B | `MaxArtifactBytes` |
 | 分块大小 | 524288 B | `ChunkRawBytes` |
+| 群 inline 附件上限 *[2026-09-27 新增]* | 393216 B | `GroupMaxArtifactBytes` |
+| 群分块大小 *[2026-09-27 新增]* | 393216 B | `GroupChunkRawBytes` |
+| 群附件上限 *[2026-09-27 新增]* | 10 MiB | `MaxGroupFileBytes` |
+| 附件文件名 *[2026-09-27 新增]* | 1–200 B，不含 `/ \ :`、`..` 与控制字符 | `ValidArtifactName` |
 | 分账 | 90/10 向下取整 | `Settle` |
 | 种子 | 1000 CL | `relaySeedCL` |
 | 国库默认 | 1e9 CL | `-treasury-init` |
