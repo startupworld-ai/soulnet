@@ -391,8 +391,14 @@ func (n *Peer) ArtifactFile(peer, key, name string) (string, error) {
 }
 
 // PersistArtifactBytes writes an attachment to ArtifactPath(peer, key, name) and returns
-// the path ("" when writing failed; the failure is logged).
+// the path ("" when writing failed; the failure is logged). The name comes from the
+// sender: one that fails a2a.ValidArtifactName (path separators, "..", ...) is refused,
+// so a crafted name can never write outside the artifacts directory.
 func (n *Peer) PersistArtifactBytes(peer, key, name string, raw []byte) string {
+	if !a2a.ValidArtifactName(name) {
+		n.logf("refusing to write attachment with an unsafe name %q", name)
+		return ""
+	}
 	p := n.ArtifactPath(peer, key, name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		n.logf("writing attachment failed: %v", err)

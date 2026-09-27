@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -145,13 +146,20 @@ func ShouldChunk(size int) bool { return size > MaxArtifactBytes }
 
 // SplitChunks splits raw bytes into ChunkRawBytes-sized chunks and returns them (not base64; the caller encodes when sending).
 // The last chunk may be shorter. Empty input returns nil.
-func SplitChunks(raw []byte) [][]byte {
+func SplitChunks(raw []byte) [][]byte { return SplitChunksOf(raw, ChunkRawBytes) }
+
+// SplitChunksOf is SplitChunks with an explicit chunk size (GroupChunkRawBytes for group
+// fan-out). size <= 0 falls back to ChunkRawBytes.
+func SplitChunksOf(raw []byte, size int) [][]byte {
 	if len(raw) == 0 {
 		return nil
 	}
+	if size <= 0 {
+		size = ChunkRawBytes
+	}
 	var out [][]byte
-	for i := 0; i < len(raw); i += ChunkRawBytes {
-		end := i + ChunkRawBytes
+	for i := 0; i < len(raw); i += size {
+		end := i + size
 		if end > len(raw) {
 			end = len(raw)
 		}
@@ -172,6 +180,47 @@ func ChunkTotal(size int) int {
 func SHA256Hex(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+// ——— Group attachments (§14.8) ———
+//
+// A group post travels through one more base64 layer than a pairwise letter: the inner
+// message JSON (attachment base64) is sealed into the cipher blob `{"e","i","c"}` whose
+// `c` is base64, and the blob itself is base64 again in Envelope.cipher. Raw bytes thus
+// grow by (4/3)^3 ≈ 2.37× on the wire, so the pairwise thresholds would overflow the
+// relay's 1 MiB body limit on POST /group/mail. The group path uses its own, smaller
+// numbers: 384 KiB raw → about 932 KB on the wire, leaving room for the envelope.
+const (
+	// GroupMaxArtifactBytes is the raw-size cap for a group attachment sent inline.
+	GroupMaxArtifactBytes = 384 * 1024
+	// GroupChunkRawBytes is the raw size of one group artifact_chunk.
+	GroupChunkRawBytes = 384 * 1024
+)
+
+// GroupShouldChunk reports whether a group attachment of this raw size must be chunked.
+func GroupShouldChunk(size int) bool { return size > GroupMaxArtifactBytes }
+
+// MaxArtifactNameLen caps an attachment file name (bytes).
+const MaxArtifactNameLen = 200
+
+// ValidArtifactName reports whether name is safe to use as the file-name part of an
+// on-disk attachment (a2a/artifacts/<peer>/<key>__<name>): non-empty, at most
+// MaxArtifactNameLen bytes, not "." / "..", no path separators, no ".." sequence, no
+// drive / stream colon, no control characters. The name comes from the sender and must
+// never be able to steer the write outside the artifacts directory.
+func ValidArtifactName(name string) bool {
+	if name == "" || len(name) > MaxArtifactNameLen || name == "." || strings.Contains(name, "..") {
+		return false
+	}
+	if strings.ContainsAny(name, `/\:`) {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // ——— Sender side: deliver one large file in chunks ———

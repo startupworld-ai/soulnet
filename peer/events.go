@@ -13,9 +13,9 @@ const (
 	EventFriendAccepted   = "friend.accepted"   // the peer accepted my request; friend created
 	EventTyping           = "typing"            // peer "busy" on/off (not archived)
 	EventMissionUpdate    = "mission.update"    // task / mission_update / mission_bid mail archived
-	EventArtifactReady    = "artifact.ready"    // chunked large file reassembled, verified and written
+	EventArtifactReady    = "artifact.ready"    // chunked large file reassembled, verified and written (GID set for a group attachment)
 	EventPresenceChanged  = "presence.changed"  // friend presence changed (only when PresenceInterval>0)
-	EventGroupMessage     = "group.message"     // group text archived (GID + sender in Peer)
+	EventGroupMessage     = "group.message"     // group post archived (GID + sender in Peer; ArtifactPath when an attachment is already on disk)
 	EventGroupTyping      = "group.typing"      // a member's seat is working in the group (Agent = which of their agents; not archived)
 	EventGroupUpdated     = "group.updated"     // joined / roster changed / pins changed / left one group (GID)
 	EventGroupApplication = "group.application" // a stranger applied to join a group I own (GID, Peer = applicant, Message = the group_join)
@@ -52,7 +52,7 @@ type Event struct {
 	Kind string    `json:"kind"`
 	Peer string    `json:"peer"` // fingerprint of the other side
 	TS   time.Time `json:"ts"`
-	// GID names the group on group.message / group.updated.
+	// GID names the group on group.message / group.updated (and on artifact.ready for a group attachment).
 	GID string `json:"gid,omitempty"`
 
 	// Message: for message.received / mission.update the incoming mail (artifact base64
@@ -62,8 +62,8 @@ type Event struct {
 	// Seq is the 1-based line number of this message in conversations/<peer>/messages.jsonl
 	// (set on archived kinds).
 	Seq int `json:"seq,omitempty"`
-	// ArtifactPath is the absolute path of the attachment on disk (message.received with an
-	// attachment / artifact.ready).
+	// ArtifactPath is the absolute path of the attachment on disk (message.received /
+	// group.message with an attachment that is already complete / artifact.ready).
 	ArtifactPath string `json:"artifact_path,omitempty"`
 	// ArtifactName / ArtifactID: set on artifact.ready.
 	ArtifactName string `json:"artifact_name,omitempty"`
