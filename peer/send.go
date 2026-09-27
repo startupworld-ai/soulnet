@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,28 @@ const MaxSendFileBytes = 50 << 20
 // been delivered either - a host should show it as "queued", never as "sent".
 // Test with errors.Is.
 var ErrQueued = fmt.Errorf("relay unreachable; queued in the outbox for retry")
+
+// ErrUndeliverable means every relay refused the envelope with a verdict that will not
+// change on retry (see permanentDelivery). Nothing was queued: resending the same bytes
+// would only be refused again, and a queued copy would block everything behind it. The
+// wrapped *a2a.RelayError (errors.As) carries the relay's status code and message.
+var ErrUndeliverable = fmt.Errorf("the relay permanently refused this envelope")
+
+// permanentDelivery reports whether a delivery error is a final verdict from the relay:
+// any 4xx except 408 (timeout), 425 (too early) and 429 (rate limit), which all mean
+// "try again later". Kicked (409) is handled separately by the callers. Keyed on the
+// status code only, never on the message text (relays localize their errors).
+func permanentDelivery(err error) bool {
+	var re *a2a.RelayError
+	if !errors.As(err, &re) {
+		return false // network / timeout / DNS: temporary
+	}
+	switch re.StatusCode {
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	}
+	return re.StatusCode >= 400 && re.StatusCode < 500
+}
 
 // SendResult is the outcome of one Send.
 type SendResult struct {
@@ -93,7 +116,8 @@ func (n *Peer) SendMessage(ctx context.Context, to *a2a.Card, msg *a2a.Message, 
 	res := &SendResult{ID: msg.ID, Status: "sent"}
 	var sendErr error
 	switch {
-	case att != nil && len(att.Raw) > 0 && a2a.ShouldChunk(len(att.Raw)):
+	// The text rides in the same envelope as an inline file, so it counts toward the limit.
+	case att != nil && len(att.Raw) > 0 && a2a.ShouldChunk(len(att.Raw)+len(msg.Body)):
 		res.Chunks, sendErr = n.sendChunked(ctx, to, toFp, msg, att.Raw, att.Name)
 	default:
 		if att != nil && len(att.Raw) > 0 {
@@ -161,6 +185,8 @@ func (n *Peer) Send(ctx context.Context, to, body, filePath string) (*SendResult
 //     message becomes the "chunk announcement", followed by artifact_chunk messages.
 //   - Relay unreachable: queued in the outbox and re-sent by the Run loop; Status=queued
 //     (no error - the message is archived and will go out).
+//   - Relay refused it for good (a 4xx, see ErrUndeliverable): not queued, not archived,
+//     the error is returned.
 //   - opts.Auto: the message (and its archived copy) carries the A2A `auto` flag.
 func (n *Peer) SendWith(ctx context.Context, to, body string, opts SendOptions) (*SendResult, error) {
 	if !n.HasIdentity() {
@@ -265,6 +291,12 @@ func (n *Peer) sendMessage(ctx context.Context, toCard *a2a.Card, msg *a2a.Messa
 			n.logf("delivery refused, another device is active (not queued): %v", k)
 			return k
 		}
+		if permanentDelivery(err) {
+			// The relay will refuse these bytes every time (too large, malformed, bad
+			// recipient...): queueing would retry forever and block the outbox.
+			n.logf("delivery refused by the relay (not queued): %v", err)
+			return fmt.Errorf("%w: %w", ErrUndeliverable, err)
+		}
 		n.logf("delivery failed (queued for retry): %v", err)
 		if qerr := n.queueOutbox(toCard, env); qerr != nil {
 			return fmt.Errorf("delivery failed and could not be queued: %v / %v", err, qerr)
@@ -300,24 +332,36 @@ const DeliverTimeout = a2a.DefaultDeliverTimeout
 // Any failure is wrapped in ErrNetwork so the host can map it to its network error code --
 // except the relay's kicked verdict, returned as is (*ErrKicked): it is not a network
 // problem and no other relay would answer differently for this identity.
+//
+// The returned error keeps the relay's verdict reachable (errors.As *a2a.RelayError). With
+// several relays it is conservative: if any of them failed temporarily (network, 5xx, 429)
+// that error is the one returned, so a permanent verdict (permanentDelivery) is only
+// reported when every relay gave one.
 func (n *Peer) DeliverToCard(ctx context.Context, card *a2a.Card, env *a2a.Envelope) error {
 	id := n.Identity()
-	var lastErr error
+	var tempErr, permErr error
 	for _, proxy := range card.Proxies {
 		pc := a2a.NewProxyClient(proxy, id).WithDeliverTimeout(DeliverTimeout).WithDevice(n.DeviceID, n.DeviceName)
 		if err := pc.Deliver(ctx, env); err != nil {
 			if k := asKicked(err); k != nil {
 				return k
 			}
-			lastErr = err
+			if permanentDelivery(err) {
+				permErr = err
+			} else {
+				tempErr = err
+			}
 			continue
 		}
 		return nil
 	}
-	if lastErr == nil {
-		return fmt.Errorf("%w: the peer's card lists no usable relay", ErrNetwork)
+	switch {
+	case tempErr != nil:
+		return fmt.Errorf("%w: %w", ErrNetwork, tempErr)
+	case permErr != nil:
+		return fmt.Errorf("%w: %w", ErrNetwork, permErr)
 	}
-	return fmt.Errorf("%w: %v", ErrNetwork, lastErr)
+	return fmt.Errorf("%w: the peer's card lists no usable relay", ErrNetwork)
 }
 
 // ——— outbox (shared format, a2a.WriteOutbox/ReadOutbox: a2a/outbox/<ns>-<seq>.json = {card, env}) ———
@@ -330,7 +374,10 @@ func (n *Peer) queueOutbox(card *a2a.Card, env *a2a.Envelope) error {
 }
 
 // flushOutbox replays queued envelopes in file order; stops at the first one that still
-// cannot be delivered (retry next round). Malformed files are dropped. Returns how many
+// cannot be delivered for a temporary reason (retry next round). Malformed files are
+// dropped. An envelope every relay refuses for good (permanentDelivery) is removed from
+// the queue and handed to OnUndeliverable, then the replay goes on: retrying it would
+// hammer the relay forever and block every envelope queued behind it. Returns how many
 // were re-sent.
 func (n *Peer) flushOutbox(ctx context.Context) int {
 	entries, err := a2a.ReadOutbox(n.outboxDir())
@@ -347,8 +394,17 @@ func (n *Peer) flushOutbox(ctx context.Context) int {
 		if err := n.DeliverToCard(ctx, e.Item.Card, e.Item.Env); err != nil {
 			if k := asKicked(err); k != nil {
 				n.logf("outbox: paused, another device is active for this identity: %v", k)
+				return sent
 			}
-			return sent
+			if !permanentDelivery(err) {
+				return sent
+			}
+			n.logf("outbox: dropping %s, refused by the relay for good: %v", e.Name, err)
+			if n.OnUndeliverable != nil {
+				n.OnUndeliverable(e.Name, e.Item, fmt.Errorf("%w: %w", ErrUndeliverable, err))
+			}
+			_ = a2a.RemoveOutbox(n.outboxDir(), e.Name)
+			continue
 		}
 		_ = a2a.RemoveOutbox(n.outboxDir(), e.Name)
 		sent++

@@ -22,10 +22,17 @@ func ShortFp(fp string) string {
 	return fp
 }
 
-// MaxArtifactBytes is the raw-size cap for attachments sent inline with a message (about 1.05MB after base64,
-// right at the edge of the relay's 1MB envelope headroom, so 700KB is used to be safe). Anything larger goes through
-// chunked transfer (see chunk.go).
-const MaxArtifactBytes = 700 * 1024
+// MaxArtifactBytes is the raw-size cap for attachments sent inline with a pairwise message.
+// Anything larger goes through chunked transfer (see chunk.go).
+//
+// A pairwise attachment is base64'd twice on its way into POST /mail: once inside the
+// message JSON (Message.artifact) and once more when the sealed ciphertext becomes
+// Envelope.cipher. Raw bytes thus grow by (4/3)^2 ≈ 1.78x on the wire, and the relay reads
+// at most 1 MiB of body. 512 KiB raw → about 932 KB on the wire, leaving ~100 KB for the
+// message text, metadata and the envelope. (The old 700 KiB cap came to ~1.24 MB on the
+// wire: every inline file between ~575 KiB and 700 KiB was rejected with HTTP 400.)
+// It equals ChunkRawBytes, so an inline file and one chunk have the same worst case.
+const MaxArtifactBytes = 512 * 1024
 
 // ControlMarkers are [internal signalling] control markers that must never leak to the peer or land in the conversation archive / chat UI.
 var ControlMarkers = []string{"END_OF_CONVERSATION", "END OF CONVERSATION"}

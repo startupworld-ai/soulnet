@@ -34,7 +34,7 @@ const (
 	TypeTyping        = "typing"         // processing signal (loading indicator, not archived; body=on/off)
 	TypeTask          = "task"           // task card (body=brief, Task=mission contract summary)
 	TypeMissionUpdate = "mission_update" // mission status change (Task.MissionID+Status; body=note; may carry a delivery attachment)
-	TypeArtifactChunk = "artifact_chunk" // large-file chunk (>700KB is split into chunks, each self-contained with metadata)
+	TypeArtifactChunk = "artifact_chunk" // large-file chunk (>512KB is split into chunks, each self-contained with metadata)
 	TypeMissionBid    = "mission_bid"    // bid negotiation (Task.MissionID+Budget+Status=bid_proposed/bid_accepted; body=note)
 	TypeAppShare      = "app_share"      // app-share notice (Share carries action/app/tunnel_url; mechanical, does not wake the alter)
 	TypeGroupVoices   = "group_voices"   // seat roster metadata: the sender's enabled seat-agent names in this group (not archived; Voices field)
@@ -85,8 +85,8 @@ type Message struct {
 	// Artifact is the file content in base64 (≤ relay cap; cleared once written to disk so the jsonl does not bloat).
 	Artifact     string `json:"artifact,omitempty"`
 	ArtifactName string `json:"artifact_name,omitempty"`
-	// Large-file chunking (>700KB goes through chunked transfer to stay under the relay's 1MB per-envelope cap).
-	// ≤700KB still takes the inline path above and these fields stay empty. When chunking: first send a
+	// Large-file chunking (>512KB goes through chunked transfer to stay under the relay's 1MB per-envelope cap).
+	// ≤512KB still takes the inline path above and these fields stay empty. When chunking: first send a
 	// "chunk announcement" (mission_update with metadata but empty Artifact), then N artifact_chunk messages
 	// in order (each with this chunk's base64 + the same metadata; self-contained, may arrive out of order).
 	ArtifactID   string `json:"artifact_id,omitempty"`   // unique ID of one file transfer (reassembly key + msgID used when finally written to disk)

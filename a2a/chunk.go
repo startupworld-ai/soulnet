@@ -123,11 +123,12 @@ func DeliveryZipName(missionID string) string {
 
 // Large-file chunked transfer: gets past the relay's ~1MB per-envelope cap.
 //
-// Threshold: a raw file ≤ MaxArtifactBytes (700KB) still takes the original inline path (Artifact sent
-// directly with the message) and this chunking logic is not involved at all. Only > 700KB is chunked.
+// Threshold: a raw file ≤ MaxArtifactBytes (512KB) still takes the original inline path (Artifact sent
+// directly with the message) and this chunking logic is not involved at all. Only > 512KB is chunked.
 //
-// ChunkRawBytes is the raw byte size of each chunk: 512KB → about 683KB after base64, which plus
-// envelope/JSON overhead stays comfortably below the relay's 1MB per-envelope cap. Not a single relay line changes.
+// ChunkRawBytes is the raw byte size of each chunk: 512KB → about 683KB after the message-level base64 and
+// about 932KB after the envelope-level base64, which plus envelope/JSON overhead stays below the relay's
+// 1MiB per-envelope cap. Not a single relay line changes.
 const ChunkRawBytes = 512 * 1024
 
 // NewArtifactID generates the unique ID of one file transfer (16 random bytes → hex; file-name/URL safe).

@@ -5,7 +5,7 @@
     "m-1/../x": "交付物-m-1____x.zip",
     "m-20260822-0001": "交付物-m-20260822-0001.zip"
   },
-  "max_artifact_bytes": 716800,
+  "max_artifact_bytes": 524288,
   "sample_plain": "soulnet artifact sample\n",
   "sample_sha256": "d2737d375958029e08a63a44ac9cdd29b2bb559da95d9f1d743044b2a64a98b1",
   "sanitize_id": {
@@ -23,12 +23,12 @@
       "chunk_total": 1
     },
     {
-      "size": 716800,
+      "size": 524288,
       "should_chunk": false,
-      "chunk_total": 2
+      "chunk_total": 1
     },
     {
-      "size": 716801,
+      "size": 524289,
       "should_chunk": true,
       "chunk_total": 2
     },
@@ -39,7 +39,7 @@
     },
     {
       "size": 524289,
-      "should_chunk": false,
+      "should_chunk": true,
       "chunk_total": 2
     },
     {
