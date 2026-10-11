@@ -224,7 +224,7 @@ func (g *GroupRoster) Verify() error {
 // GroupSenderKey is MY sending chain for one group: epoch + position + current chain key.
 // Advances once per message sent; a fresh epoch (rekey) replaces chain and resets Index.
 type GroupSenderKey struct {
-	Epoch int    `json:"epoch"` // bumped on every rekey (member removal)
+	Epoch int    `json:"epoch"` // bumped on every rekey (member removal; device switch, see NextSenderEpoch)
 	Index int    `json:"index"` // next message index to send
 	Chain string `json:"chain"` // current 32-byte chain key, base64
 }
@@ -236,6 +236,25 @@ func NewGroupSenderKey(epoch int) (*GroupSenderKey, error) {
 		return nil, err
 	}
 	return &GroupSenderKey{Epoch: epoch, Index: 0, Chain: EncodeKey(b)}, nil
+}
+
+// NextSenderEpoch is the epoch for a rotation that must outrank every epoch this identity
+// may already have used from ANOTHER device: max(cur+1, now in Unix seconds).
+//
+// One identity can move between devices (account takeover, restore from a backup) and the
+// copy of keys.json it lands on may be behind the one it last sent with. cur+1 from a stale
+// copy can equal an epoch the other device already used - receivers then hold that epoch at
+// a later index and drop the new chain's first messages as replays - or fall below it, and
+// every message is dropped as superseded. The clock floor makes a later rotation outrank an
+// earlier one on any device (only one device is active at a time, switches are seconds
+// apart at the very least); cur+1 keeps it monotonic on this device whatever the clock says.
+// Epochs stay plain JSON integers; receivers of any version only compare them.
+func NextSenderEpoch(cur int, now time.Time) int {
+	e := cur + 1
+	if t := int(now.Unix()); t > e {
+		e = t
+	}
+	return e
 }
 
 // GroupRecvState is what I hold for ONE sender in ONE group: their chain at my current

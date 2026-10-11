@@ -22,6 +22,7 @@ package peer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -576,6 +577,96 @@ func (n *Peer) redistributeSenderKey(ctx context.Context, st *a2a.GroupState) {
 		return
 	}
 	n.distributeSenderKey(ctx, st)
+}
+
+// RotateSenderKeys starts a fresh sender chain in every group I still belong to, at
+// a2a.NextSenderEpoch (above my current epoch and the clock floor), and forgets who holds
+// the old one. It is local only - no network - so a host can call it synchronously before
+// anything is sent; the new chains reach the members with DistributeSenderKeys or, at the
+// latest, with the next send (fanOutGroup tops up the distribution before sealing).
+//
+// Hosts call it whenever this identity may have sent from ANOTHER device since this copy of
+// keys.json was written: the same identity moved to (or back to) this device - an account
+// takeover, a restore from a backup. Such a copy can be behind: continuing its chain reuses
+// positions the members already consumed and every one of those messages is dropped as a
+// replay ("message index N already consumed"), silently, until the index catches up. A new
+// epoch never collides with what the other device sent. Do NOT call it on a plain restart
+// of the device that was sending all along: every rotation costs one pairwise group_key
+// per member.
+//
+// Groups I was removed from (or that were dissolved) are skipped - nothing goes out there.
+// Returns the rotated group ids; err is the first persistence failure (the others are
+// still attempted).
+func (n *Peer) RotateSenderKeys(why string) ([]string, error) {
+	var rotated []string
+	var firstErr error
+	now := time.Now()
+	for _, st := range n.Groups.List() {
+		gid := st.Roster.GroupID
+		if n.GroupLeft(gid) {
+			continue
+		}
+		n.gkMu.Lock()
+		keys := n.Groups.Keys(gid)
+		cur, curIndex := 0, 0
+		if keys.Mine != nil {
+			cur, curIndex = keys.Mine.Epoch, keys.Mine.Index
+		}
+		fresh, err := a2a.NewGroupSenderKey(a2a.NextSenderEpoch(cur, now))
+		if err == nil {
+			keys.Mine = fresh
+			keys.DistributedTo = map[string]int{}
+			pruneGroupKeysToRoster(keys, st.Roster)
+			err = n.Groups.PutKeys(gid, keys)
+		}
+		n.gkMu.Unlock()
+		if err != nil {
+			n.logf("group %s: rotating my sender key failed: %v", a2a.ShortFp(gid), err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		n.logf("group %s: sender key rotated from epoch %d (index %d) to epoch %d (%s)", a2a.ShortFp(gid), cur, curIndex, fresh.Epoch, why)
+		rotated = append(rotated, gid)
+	}
+	return rotated, firstErr
+}
+
+// SenderKeyMarks returns, per group I hold, a short fingerprint of MY sending chain
+// position ("epoch/index/" + 8 hex chars of SHA-256 over the chain key; "" without a key).
+// Hosts snapshot it around anything that rewrites keys.json from outside (importing a
+// backup or another device's data): only this device advances my chain, so any change
+// across such a step means the file came from elsewhere and RotateSenderKeys is due. The
+// chain key itself never leaves the store.
+func (n *Peer) SenderKeyMarks() map[string]string {
+	out := map[string]string{}
+	n.gkMu.Lock()
+	defer n.gkMu.Unlock()
+	for _, st := range n.Groups.List() {
+		gid := st.Roster.GroupID
+		mine := n.Groups.Keys(gid).Mine
+		if mine == nil {
+			out[gid] = ""
+			continue
+		}
+		sum := sha256.Sum256([]byte(mine.Chain))
+		out[gid] = fmt.Sprintf("%d/%d/%x", mine.Epoch, mine.Index, sum[:4])
+	}
+	return out
+}
+
+// DistributeSenderKeys hands my current chain of every group I still belong to to each
+// co-member that does not hold that epoch yet (best effort per member; failures are
+// retried by the next send). The network half of RotateSenderKeys.
+func (n *Peer) DistributeSenderKeys(ctx context.Context) {
+	ctx = ctxOrBackground(ctx)
+	for _, st := range n.Groups.List() {
+		if n.GroupLeft(st.Roster.GroupID) {
+			continue
+		}
+		n.distributeSenderKey(ctx, st)
+	}
 }
 
 // GroupCreate creates a group with me as owner plus the given FRIENDS, publishes the
@@ -1785,6 +1876,14 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		n.logf("[grp-debug] decrypt FAIL gid=%s sender=%s blobE=%d blobI=%d heldEpoch=%d heldIndex=%d err=%v", a2a.ShortFp(gid), a2a.ShortFp(senderFp), blobE, blobI, rst.Epoch, rst.Index, err)
 		if errors.Is(err, a2a.ErrGroupKeyMissing) {
 			return n.transientOrDrop("grp-epoch-"+gid+senderFp, err)
+		}
+		if blobE == rst.Epoch && blobI >= 0 && blobI < rst.Index {
+			// Not a debug detail: this is a lost message. Either the relay redelivered one I
+			// already read, or - the case that matters - the sender went back on its own chain
+			// (same identity on another device with an older copy of its keys) and everything
+			// it sends is dropped here until its index passes mine. The sender's side fixes it
+			// by rotating (RotateSenderKeys); this line is what makes it findable.
+			n.logf("group %s: DROPPED a message from %s: epoch %d index %d was already used (I am at index %d) - a replay, or the sender's chain went back (another device of that identity with an older key copy)", a2a.ShortFp(gid), a2a.ShortFp(senderFp), blobE, blobI, rst.Index)
 		}
 		return permanent(err)
 	}
