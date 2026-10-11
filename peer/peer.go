@@ -367,3 +367,22 @@ func ctxOrBackground(ctx context.Context) context.Context {
 	}
 	return ctx
 }
+
+// PublishAvatar uploads our avatar to our own post office (friends and group members read it
+// from there, see a2a.FetchAvatar). RemoveAvatar clears it.
+func (n *Peer) PublishAvatar(ctx context.Context, data []byte, contentType string) error {
+	pc := n.proxyClient()
+	if pc == nil {
+		return fmt.Errorf("PublishAvatar: no identity")
+	}
+	return pc.PutAvatar(ctx, data, contentType)
+}
+
+// RemoveAvatar deletes our avatar from our own post office.
+func (n *Peer) RemoveAvatar(ctx context.Context) error {
+	pc := n.proxyClient()
+	if pc == nil {
+		return fmt.Errorf("RemoveAvatar: no identity")
+	}
+	return pc.DeleteAvatar(ctx)
+}

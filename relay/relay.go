@@ -231,6 +231,7 @@ func (s *Server) mountCore() {
 	}))
 	s.mountGroups(must)
 	s.mountDevice(must)
+	s.mountAvatar(must)
 	s.mountPresence(must)
 	s.mountRendezvous(must)
 	s.mountVault(must)
