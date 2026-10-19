@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // PublishGroup uploads a signed roster to the relay (POST /group/publish). The roster
@@ -116,6 +117,13 @@ func (c *ProxyClient) FetchGroupCard(ctx context.Context, gid string) (*GroupCar
 }
 
 // DeliverGroup posts one group envelope for fan-out (POST /group/mail).
+//
+// The body can be close to 1 MiB when the post carries an inline attachment or an
+// artifact_chunk (§14.8), and the short-request timeout (15s by default) covers the
+// whole upload. On a slow uplink the relay received and fanned the mail out while the
+// client had already given up — the sender saw "failed", retried, and the group got
+// duplicates. So the timeout grows with the body: DeliverTimeout plus one second per
+// 16 KiB, capped by GroupDeliverMaxTimeout.
 func (c *ProxyClient) DeliverGroup(ctx context.Context, env *Envelope) error {
 	raw, _ := json.Marshal(env)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.Base+"/group/mail", bytes.NewReader(raw))
@@ -124,7 +132,7 @@ func (c *ProxyClient) DeliverGroup(ctx context.Context, env *Envelope) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	c.setDevice(req) // posting AS this identity is gated on the active device, like Deliver
-	resp, err := c.shortHTTP().Do(req)
+	resp, err := c.groupHTTP(len(raw)).Do(req)
 	if err != nil {
 		return err
 	}
@@ -133,4 +141,34 @@ func (c *ProxyClient) DeliverGroup(ctx context.Context, env *Envelope) error {
 		return apiErr(resp)
 	}
 	return nil
+}
+
+// GroupDeliverMaxTimeout caps the size-scaled timeout of DeliverGroup.
+const GroupDeliverMaxTimeout = 2 * time.Minute
+
+// GroupDeliverTimeout is the HTTP timeout DeliverGroup uses for a body of n bytes on top
+// of base (the short-request timeout): base + 1s per 16 KiB, never above
+// GroupDeliverMaxTimeout and never below base.
+func GroupDeliverTimeout(base time.Duration, n int) time.Duration {
+	if base <= 0 {
+		base = DefaultDeliverTimeout
+	}
+	d := base + time.Duration(n/(16*1024))*time.Second
+	if d > GroupDeliverMaxTimeout {
+		d = GroupDeliverMaxTimeout
+	}
+	return d
+}
+
+// groupHTTP returns a client like shortHTTP() (same transport) whose timeout fits a
+// /group/mail body of n bytes.
+func (c *ProxyClient) groupHTTP(n int) *http.Client {
+	short := c.shortHTTP()
+	want := GroupDeliverTimeout(short.Timeout, n)
+	if short.Timeout <= 0 || want <= short.Timeout {
+		return short
+	}
+	cl := *short
+	cl.Timeout = want
+	return &cl
 }
