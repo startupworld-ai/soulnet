@@ -61,12 +61,13 @@ func TestGroupCreateChatKickLeave(t *testing.T) {
 	carol.await(t, "carol gets hello", func(e Event) bool { return e.Kind == EventGroupMessage && e.GID == gid })
 
 	// Non-owner → group, posted by one of bob's NAMED seat agents (by=alter,
-	// agent=DevBot): the display provenance must survive fan-out and archiving.
-	if _, err := bob.GroupSend(ctx, gid, "hi from bob", GroupSendOptions{By: a2a.ByAlter, Auto: true, Agent: "DevBot"}); err != nil {
+	// agent=DevBot): the display provenance must survive fan-out and archiving, and so
+	// must the composer batch id.
+	if _, err := bob.GroupSend(ctx, gid, "hi from bob", GroupSendOptions{By: a2a.ByAlter, Auto: true, Agent: "DevBot", Batch: "b-1"}); err != nil {
 		t.Fatalf("bob GroupSend: %v", err)
 	}
 	alice.await(t, "alice gets bob's message", func(e Event) bool {
-		return e.Kind == EventGroupMessage && e.GID == gid && e.Message.Body == "hi from bob" && e.Message.Agent == "DevBot"
+		return e.Kind == EventGroupMessage && e.GID == gid && e.Message.Body == "hi from bob" && e.Message.Agent == "DevBot" && e.Message.Batch == "b-1"
 	})
 	carol.await(t, "carol gets bob's message", func(e Event) bool {
 		return e.Kind == EventGroupMessage && e.GID == gid && e.Message.Body == "hi from bob" && e.Message.Agent == "DevBot"
@@ -77,8 +78,11 @@ func TestGroupCreateChatKickLeave(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("carol archive: want 2 entries, got %d", len(entries))
 	}
-	if entries[1].By != a2a.ByAlter || entries[1].Agent != "DevBot" {
-		t.Fatalf("carol archived provenance: by=%q agent=%q", entries[1].By, entries[1].Agent)
+	if entries[1].By != a2a.ByAlter || entries[1].Agent != "DevBot" || entries[1].Batch != "b-1" {
+		t.Fatalf("carol archived provenance: by=%q agent=%q batch=%q", entries[1].By, entries[1].Agent, entries[1].Batch)
+	}
+	if out := bob.GroupConversation(gid, 0, 0); out[len(out)-1].Batch != "b-1" {
+		t.Fatalf("bob's own archive lost the batch: %q", out[len(out)-1].Batch)
 	}
 
 	// Voices metadata: bob announces his enabled seat agents; the other members'

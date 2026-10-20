@@ -813,6 +813,9 @@ type GroupSendOptions struct {
 	// File is the path of a local file to attach instead of Attachment (validated and
 	// read with LoadSendFile under MaxGroupFileBytes).
 	File string
+	// Batch is the shared id of the posts one composer send splits into (see
+	// a2a.Message.Batch); "" = a standalone post. Over a2a.MaxBatchLen it is dropped.
+	Batch string
 }
 
 // MaxGroupFileBytes caps the raw size of one group attachment. Lower than the pairwise
@@ -886,6 +889,9 @@ func (n *Peer) GroupSend(ctx context.Context, gid, body string, opts GroupSendOp
 	ctx = ctxOrBackground(ctx)
 	msg := &a2a.Message{ID: n.newMsgID(), From: me, GID: gid, TS: time.Now(), Type: a2a.TypeText,
 		Body: body, By: opts.By, Auto: opts.Auto, Agent: opts.Agent}
+	if b := strings.TrimSpace(opts.Batch); len(b) <= a2a.MaxBatchLen {
+		msg.Batch = b
+	}
 	var chunks [][]byte
 	if att != nil {
 		msg.ArtifactName = att.Name

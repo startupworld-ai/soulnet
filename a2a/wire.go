@@ -124,7 +124,15 @@ type Message struct {
 	Voices []string `json:"voices,omitempty"`
 	// PinRemove unpins the pin with this message id (type group_pin with empty body).
 	PinRemove string `json:"pin_remove,omitempty"`
+	// Batch ties together the posts of one composer send: a message carries one file,
+	// so N attachments go out as N posts (text on the first) sharing this id. Clients
+	// that know it render the run as one bubble; older ones ignore it and show N posts.
+	// Display-only and self-declared; nothing is enforced on it.
+	Batch string `json:"batch,omitempty"`
 }
+
+// MaxBatchLen caps Message.Batch (a short random id; longer values are dropped).
+const MaxBatchLen = 40
 
 // TaskSummary is the mission summary embedded in a message (for the frontend task card).
 type TaskSummary struct {
