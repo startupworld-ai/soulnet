@@ -147,6 +147,9 @@ func TestRecallGroup(t *testing.T) {
 	if e := entryByID(bob.GroupConversation(gid, 0, 0), res.ID); e == nil || !e.Recalled || e.Body != "typo here" {
 		t.Fatalf("bob's own copy: %+v", e)
 	}
+	if l := bob.GroupList(); len(l) != 1 || !l[0].LastRecalled || l[0].LastBody != "" || l[0].LastFrom != bob.Fingerprint() {
+		t.Fatalf("bob's list row should not preview his recalled text: %+v", l)
+	}
 
 	// Forgery: alice posts, carol fans out a recall naming alice's post.
 	ares, err := alice.GroupSend(ctx, gid, "alice stays", GroupSendOptions{})

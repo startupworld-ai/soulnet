@@ -67,6 +67,10 @@ type GroupSummary struct {
 	// LastArtifact is the attachment file name of the last archived entry (a group post may
 	// carry a file and no text), so list rows can preview it.
 	LastArtifact string `json:"last_artifact,omitempty"`
+	// LastRecalled: the last entry is a recalled message (LastBody / LastArtifact are then
+	// empty, also when it was my own); LastFrom says whose, so rows can word it.
+	LastRecalled bool   `json:"last_recalled,omitempty"`
+	LastFrom     string `json:"last_from,omitempty"`
 	// Profile is the governance profile off the roster (nil on pre-profile groups), so
 	// list rows can gate composers without fetching every group.
 	Profile *a2a.GroupProfile `json:"profile,omitempty"`
@@ -141,8 +145,13 @@ func (n *Peer) GroupSummaryOf(st *a2a.GroupState) GroupSummary {
 	s.Left, s.LeftReason = n.groupLeftMark(gid)
 	if last != nil {
 		s.LastTs = last.TS.UnixMilli()
-		s.LastBody = last.Body
-		s.LastArtifact = last.ArtifactName
+		s.LastFrom = last.From
+		if last.Recalled {
+			s.LastRecalled = true // my own recalled text stays in my archive; it is not a preview
+		} else {
+			s.LastBody = last.Body
+			s.LastArtifact = last.ArtifactName
+		}
 	}
 	return s
 }
