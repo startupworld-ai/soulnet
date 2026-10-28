@@ -274,12 +274,14 @@ func (s *Server) methods() map[string]handler {
 		"friends.remove":          s.friendsRemove,
 		"message.send":            s.messageSend,
 		"message.typing":          s.messageTyping,
+		"message.recall":          s.messageRecall,
 		"conversation.get":        s.conversationGet,
 		"conversation.markRead":   s.conversationMarkRead,
 		"group.create":            s.groupCreate,
 		"group.list":              s.groupList,
 		"group.get":               s.groupGet,
 		"group.send":              s.groupSend,
+		"group.recall":            s.groupRecall,
 		"group.conversation":      s.groupConversation,
 		"group.markRead":          s.groupMarkRead,
 		"group.leave":             s.groupLeave,
@@ -335,9 +337,9 @@ func toRPCError(err error) *rpcError {
 		code = codeNoIdentity
 	case errors.Is(err, peer.ErrNotFriend), errors.Is(err, peer.ErrSelf):
 		code = codeNotFriend
-	case errors.Is(err, peer.ErrNoPending), errors.Is(err, peer.ErrNoGroup):
+	case errors.Is(err, peer.ErrNoPending), errors.Is(err, peer.ErrNoGroup), errors.Is(err, peer.ErrNoMessage):
 		code = codeNotFound
-	case errors.Is(err, peer.ErrGroupOwner), errors.Is(err, peer.ErrBadProfile):
+	case errors.Is(err, peer.ErrGroupOwner), errors.Is(err, peer.ErrBadProfile), errors.Is(err, peer.ErrNotRecallable):
 		code = codeInvalidParams
 	case errors.Is(err, peer.ErrBadCard):
 		code = codeBadCard
@@ -413,7 +415,8 @@ func (s *Server) initialize(ctx context.Context, params json.RawMessage) (any, e
 		"methods":  s.methodNames(),
 		"notifications": []string{peer.EventMessageReceived, peer.EventFriendRequest, peer.EventFriendAccepted,
 			peer.EventTyping, peer.EventMissionUpdate, peer.EventArtifactReady, peer.EventPresenceChanged,
-			peer.EventGroupMessage, peer.EventGroupTyping, peer.EventGroupUpdated, peer.EventGroupApplication},
+			peer.EventGroupMessage, peer.EventGroupTyping, peer.EventGroupUpdated, peer.EventGroupApplication,
+			peer.EventMessageRecalled},
 	}, nil
 }
 
@@ -637,6 +640,22 @@ func (s *Server) messageTyping(ctx context.Context, params json.RawMessage) (any
 	}
 	on := p.On == nil || *p.On
 	return nil, s.n.Typing(ctx, p.To, on)
+}
+
+// messageRecall withdraws one of my text messages to a friend (the host decides how
+// long after sending that is allowed; the peer does not enforce a window).
+func (s *Server) messageRecall(ctx context.Context, params json.RawMessage) (any, error) {
+	var p struct {
+		To string `json:"to"`
+		ID string `json:"id"`
+	}
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	if p.To == "" || p.ID == "" {
+		return nil, invalid("to and id must not be empty")
+	}
+	return s.n.Recall(ctx, p.To, p.ID)
 }
 
 func (s *Server) conversationGet(_ context.Context, params json.RawMessage) (any, error) {

@@ -77,6 +77,21 @@ func (s *Server) groupSend(ctx context.Context, params json.RawMessage) (any, er
 	return res, nil
 }
 
+// groupRecall withdraws one of my posts in a group.
+func (s *Server) groupRecall(ctx context.Context, params json.RawMessage) (any, error) {
+	var p struct {
+		GID string `json:"gid"`
+		ID  string `json:"id"`
+	}
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	if p.GID == "" || p.ID == "" {
+		return nil, invalid("gid and id must not be empty")
+	}
+	return s.n.GroupRecall(ctx, p.GID, p.ID)
+}
+
 // groupVoicesAnnounce fans out this seat's enabled agent names in one group
 // (metadata for the other members' @-autocomplete; empty voices clears it).
 func (s *Server) groupVoicesAnnounce(ctx context.Context, params json.RawMessage) (any, error) {

@@ -300,6 +300,8 @@ func (n *Peer) dispatch(msg *a2a.Message) error {
 		return n.archiveIncoming(msg, EventMissionUpdate)
 	case a2a.TypeArtifactChunk:
 		return n.handleArtifactChunk(msg)
+	case a2a.TypeRecall:
+		return n.handleRecall(msg)
 	default:
 		if handled, err := n.HandleGroupMessage(msg); handled {
 			return err

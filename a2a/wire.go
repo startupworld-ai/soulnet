@@ -38,6 +38,7 @@ const (
 	TypeMissionBid    = "mission_bid"    // bid negotiation (Task.MissionID+Budget+Status=bid_proposed/bid_accepted; body=note)
 	TypeAppShare      = "app_share"      // app-share notice (Share carries action/app/tunnel_url; mechanical, does not wake the alter)
 	TypeGroupVoices   = "group_voices"   // seat roster metadata: the sender's enabled seat-agent names in this group (not archived; Voices field)
+	TypeRecall        = "recall"         // the sender withdraws one of its own earlier text messages (Recall = that message's id; GID set in a group). Not archived; older clients ignore the type
 )
 
 // App-share actions (Share.Action of TypeAppShare messages).
@@ -129,6 +130,12 @@ type Message struct {
 	// that know it render the run as one bubble; older ones ignore it and show N posts.
 	// Display-only and self-declared; nothing is enforced on it.
 	Batch string `json:"batch,omitempty"`
+	// Recall is the id of the message a TypeRecall withdraws: pairwise, a message the
+	// sender sent to this receiver; in a group (GID set), a post the sender made there.
+	// Receivers only honour it when the archived original was sent by the same From
+	// (the authenticated sender), so nobody can withdraw someone else's words. How long
+	// after sending a recall is allowed is the sending host's policy, not enforced here.
+	Recall string `json:"recall,omitempty"`
 }
 
 // MaxBatchLen caps Message.Batch (a short random id; longer values are dropped).

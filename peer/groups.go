@@ -1968,6 +1968,10 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 			return nil
 		}
 		return n.handleGroupArtifactChunk(gid, senderFp, msg)
+	case a2a.TypeRecall:
+		// The sender takes back one of its posts (recall.go). No AllowSpeak: withdrawing
+		// is not speaking; applyRecall checks the post is the sender's own.
+		return n.applyRecall(key, GroupArtifactPeer(gid), senderFp, gid, msg)
 	default:
 		n.logf("group %s: unknown fan-out type %q (ignored)", a2a.ShortFp(gid), msg.Type)
 		return nil

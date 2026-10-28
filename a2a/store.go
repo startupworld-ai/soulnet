@@ -24,6 +24,11 @@ type ConvEntry struct {
 	// generated this reply (= autonomy SessionRecord.ID, shaped like msg-<first 8 of peerFp>-<unixms>); the frontend
 	// uses it to attach "view the processing".
 	SessionID string `json:"session_id,omitempty"`
+	// Recalled marks a message its sender withdrew (TypeRecall). On the receiving side
+	// the body and attachment are wiped from the archive, only the shell (id, from, ts)
+	// stays so clients can show "withdrawn" in its place; on the sending side the text
+	// is kept (the author's own copy, e.g. to edit and resend it).
+	Recalled bool `json:"recalled,omitempty"`
 }
 
 // ConvStore manages appending to and reading the conversation jsonl.
@@ -111,6 +116,68 @@ func (s *ConvStore) AppendSeq(peer string, e *ConvEntry) (int, error) {
 		set[e.ID] = true
 	}
 	return n, nil
+}
+
+// ErrNoEntry: Update found no entry with that id in the conversation.
+var ErrNoEntry = fmt.Errorf("no such message in the conversation")
+
+// Update rewrites the one entry of the conversation with peer whose message id is id:
+// fn edits it in place and reports whether anything changed (false = leave the file
+// alone). Every other line is copied byte for byte and the line count is unchanged, so
+// seqs stay stable. Returns the entry's seq and its (possibly edited) value, or
+// ErrNoEntry. fn's error aborts the rewrite and is returned as is. Rare by design
+// (one recall rewrites one file); the replacement is a temp file renamed over the old.
+func (s *ConvStore) Update(peer, id string, fn func(e *ConvEntry) (bool, error)) (int, *ConvEntry, error) {
+	if peer == "" || strings.ContainsAny(peer, `/\`) || strings.Contains(peer, "..") {
+		return 0, nil, fmt.Errorf("非法 peer 指纹")
+	}
+	if id == "" {
+		return 0, nil, ErrNoEntry
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.file(peer)
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil, ErrNoEntry
+		}
+		return 0, nil, err
+	}
+	lines := strings.SplitAfter(string(raw), "\n")
+	for i := len(lines) - 1; i >= 0; i-- { // newest first: a recall targets a recent message
+		line := strings.TrimRight(lines[i], "\r\n")
+		if line == "" || !strings.Contains(line, id) {
+			continue
+		}
+		var e ConvEntry
+		if json.Unmarshal([]byte(line), &e) != nil || e.ID != id || e.Type == TypeArtifactChunk {
+			continue
+		}
+		changed, err := fn(&e)
+		if err != nil {
+			return i + 1, &e, err
+		}
+		if !changed {
+			return i + 1, &e, nil
+		}
+		out, err := json.Marshal(&e)
+		if err != nil {
+			return 0, nil, err
+		}
+		nl := lines[i][len(line):] // keep the original terminator ("" on an unterminated last line)
+		lines[i] = string(out) + nl
+		tmp := p + ".tmp"
+		if err := os.WriteFile(tmp, []byte(strings.Join(lines, "")), 0o644); err != nil {
+			return 0, nil, err
+		}
+		if err := os.Rename(tmp, p); err != nil {
+			_ = os.Remove(tmp)
+			return 0, nil, err
+		}
+		return i + 1, &e, nil
+	}
+	return 0, nil, ErrNoEntry
 }
 
 // countLines returns the number of physical lines in path the way bufio.Scanner counts
