@@ -15,10 +15,14 @@
 // Legacy clients (no X-Soulnet-Device header) keep working exactly as before as long as
 // no device has ever claimed the mailbox; once one has, they are kicked like any other
 // non-active device (an upgraded device is active, the old copy must not steal mail).
+//
+// Extensions may veto explicit claims with SetClaimGuard (e.g. a product that lets the
+// owner pin the mailbox to one device). Without a guard nothing above changes.
 package relay
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -170,6 +174,76 @@ func (s *Server) deviceGate(r *http.Request, box string) *a2a.ActiveDevice {
 	return &cp
 }
 
+// ClaimGuard is an optional extension hook consulted by every explicit claim
+// (POST /box/active) after the request has been authenticated as the mailbox owner and
+// before anything is changed. Returning nil lets the claim proceed exactly as without a
+// guard; returning an error refuses it with 409 and leaves the active device untouched.
+// A *ClaimDenied error controls the verdict body; any other error is reported as
+// {"error": ClaimDeniedErrorCode, "message": err.Error()}.
+//
+// The guard runs outside the relay's active-device lock, so it may call ActiveDevice and
+// other read APIs of the Server. It is NOT consulted for implicit first claims (the first
+// device-tagged mailbox request on a never-claimed mailbox), since nothing is taken over.
+type ClaimGuard func(box, device string) error
+
+// ClaimDeniedErrorCode is the JSON "error" value used when a ClaimGuard refuses a claim
+// with an error that is not a *ClaimDenied.
+const ClaimDeniedErrorCode = "claim_denied"
+
+// ClaimDenied is the error a ClaimGuard returns to shape the 409 verdict: Code becomes the
+// JSON "error" value (ClaimDeniedErrorCode when empty) and Fields are merged into the body
+// (an "error" key in Fields is ignored).
+type ClaimDenied struct {
+	Code   string
+	Fields map[string]any
+}
+
+func (e *ClaimDenied) Error() string {
+	code := e.Code
+	if code == "" {
+		code = ClaimDeniedErrorCode
+	}
+	return "relay: claim denied: " + code
+}
+
+// SetClaimGuard installs (or, with nil, removes) the claim guard. Without a guard, claims
+// behave exactly as they always have.
+func (s *Server) SetClaimGuard(g ClaimGuard) {
+	if g == nil {
+		s.claimGuard.Store(nil)
+		return
+	}
+	s.claimGuard.Store(&g)
+}
+
+// checkClaimGuard runs the installed guard (nil = allowed).
+func (s *Server) checkClaimGuard(box, device string) error {
+	g := s.claimGuard.Load()
+	if g == nil || *g == nil {
+		return nil
+	}
+	return (*g)(box, device)
+}
+
+// writeClaimDenied answers the 409 verdict for a claim refused by the guard.
+func writeClaimDenied(w http.ResponseWriter, err error) {
+	body := map[string]any{}
+	code := ClaimDeniedErrorCode
+	var d *ClaimDenied
+	if errors.As(err, &d) {
+		for k, v := range d.Fields {
+			body[k] = v
+		}
+		if d.Code != "" {
+			code = d.Code
+		}
+	} else {
+		body["message"] = err.Error()
+	}
+	body["error"] = code
+	WriteJSON(w, http.StatusConflict, body)
+}
+
 // writeKicked answers the 409 kicked verdict for the given active device.
 func writeKicked(w http.ResponseWriter, ad *a2a.ActiveDevice) {
 	WriteJSON(w, http.StatusConflict, map[string]any{
@@ -223,6 +297,10 @@ func (s *Server) boxActiveClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.authBox(r, "POST", "/box/active", body.Box); err != nil {
 		WriteError(w, 401, err.Error())
+		return
+	}
+	if err := s.checkClaimGuard(body.Box, body.Device); err != nil {
+		writeClaimDenied(w, err)
 		return
 	}
 	ad, err := s.claimActive(body.Box, body.Device, trimDeviceName(body.Name), body.Handoff)

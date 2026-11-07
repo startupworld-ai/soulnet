@@ -50,6 +50,8 @@ type Server struct {
 	// acMu guards active: mailbox (fingerprint) -> its active device (nil cached = none; see active.go).
 	acMu   sync.Mutex
 	active map[string]*a2a.ActiveDevice
+	// claimGuard is the optional extension hook consulted by POST /box/active (active.go).
+	claimGuard atomic.Pointer[ClaimGuard]
 
 	// rvMu guards rendezvous: pairing rendezvous id -> in-memory state (see rendezvous.go).
 	rvMu       sync.Mutex
