@@ -124,6 +124,8 @@ type Peer struct {
 
 	rbMu   sync.Mutex
 	rbSeen map[string]int // transient-retry budget (poison-mail guard, see retryBudget)
+	kqMu   sync.Mutex
+	kqSeen map[string]time.Time // group_key_req pacing, both directions (see keyReqDue)
 
 	// gkMu serializes every load→mutate→store of a group's keys.json: the receive loop
 	// and API calls race on it, and a stale write must never resurrect an already-used
@@ -168,6 +170,7 @@ func Init(home, relay string) (*Peer, error) {
 		presCac:  map[string]presEntry{},
 		dlSeen:   map[string]struct{}{},
 		rbSeen:   map[string]int{},
+		kqSeen:   map[string]time.Time{},
 	}
 	id, err := a2a.LoadIdentity(abs)
 	if err != nil {

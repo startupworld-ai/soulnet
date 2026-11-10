@@ -39,6 +39,12 @@ import (
 const (
 	TypeGroupInvite = "group_invite" // pairwise, owner → invitee: carries the signed roster (Group field); the invitee joins and distributes its sender key
 	TypeGroupKey    = "group_key"    // pairwise, member → member: carries the sender's chain key for one group (GKey field)
+	// TypeGroupKeyReq asks a co-member to hand over its current chain key again: pairwise,
+	// member → member, the group named by GID, no payload. Sent by a receiver that cannot
+	// open that member's group messages (no receive state, or one from an older epoch) -
+	// typically after its keys.json was replaced by an older copy. Peers that predate it
+	// ignore the unknown type.
+	TypeGroupKeyReq = "group_key_req"
 	TypeGroupLeave  = "group_leave"  // pairwise, member → owner: "remove me from the roster" (body = optional note)
 	TypeGroupUpdate = "group_update" // fan-out, owner → group: "the roster changed, refetch it" (body = note; triggers rekey checks)
 	// TypeGroupDissolve is the owner's last word in a group: fan-out, owner → group, "this

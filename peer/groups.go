@@ -1872,6 +1872,7 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 	if rst == nil {
 		n.gkMu.Unlock()
 		n.logf("[grp-debug] envelope gid=%s sender=%s KEY-MISSING (transient retry)", a2a.ShortFp(gid), a2a.ShortFp(senderFp))
+		n.requestSenderKey(st, senderFp, "no receive state")
 		return n.transientOrDrop("grp-key-"+gid+senderFp,
 			fmt.Errorf("%w (group %s, sender %s)", a2a.ErrGroupKeyMissing, a2a.ShortFp(gid), a2a.ShortFp(senderFp)))
 	}
@@ -1890,6 +1891,7 @@ func (n *Peer) handleGroupEnvelope(env *a2a.Envelope) error {
 		}
 		n.logf("[grp-debug] decrypt FAIL gid=%s sender=%s blobE=%d blobI=%d heldEpoch=%d heldIndex=%d err=%v", a2a.ShortFp(gid), a2a.ShortFp(senderFp), blobE, blobI, rst.Epoch, rst.Index, err)
 		if errors.Is(err, a2a.ErrGroupKeyMissing) {
+			n.requestSenderKey(st, senderFp, fmt.Sprintf("holding epoch %d, message is epoch %d", rst.Epoch, blobE))
 			return n.transientOrDrop("grp-epoch-"+gid+senderFp, err)
 		}
 		if blobE == rst.Epoch && blobI >= 0 && blobI < rst.Index {
@@ -2101,6 +2103,91 @@ func (n *Peer) handleGroupKey(msg *a2a.Message) error {
 	return n.Groups.PutKeys(msg.GID, keys)
 }
 
+// Sender-key recovery (group_key_req).
+//
+// A member distributes its chain once per epoch and records who got it (DistributedTo).
+// When a receiver loses that state - its keys.json replaced by an older copy from another
+// device or a backup - nothing on the sender's side notices: the record still says
+// "delivered", so the key is never sent again and every message from that member fails
+// with KEY-MISSING / "message epoch N > held epoch M" until the retry budget drops it,
+// silently. The receiver is the only one who knows, so it asks.
+const (
+	// groupKeyReqEvery paces how often I ask one member for its key in one group. The
+	// answer normally arrives within seconds; asking again covers a lost request.
+	groupKeyReqEvery = 2 * time.Minute
+	// groupKeyAnswerEvery paces how often I answer one member in one group, so a looping
+	// or hostile peer cannot make me send key messages at will.
+	groupKeyAnswerEvery = 30 * time.Second
+)
+
+// keyReqDue reports whether the paced action named by key may run now, and books it.
+func (n *Peer) keyReqDue(key string, every time.Duration) bool {
+	n.kqMu.Lock()
+	defer n.kqMu.Unlock()
+	now := time.Now()
+	if last, ok := n.kqSeen[key]; ok && now.Sub(last) < every {
+		return false
+	}
+	if len(n.kqSeen) > 2000 {
+		n.kqSeen = map[string]time.Time{}
+	}
+	n.kqSeen[key] = now
+	return true
+}
+
+// requestSenderKey asks senderFp for its current chain in st's group (paced, best effort,
+// off the receive path). The messages that triggered it stay lost - the sender can only
+// hand over where its chain is NOW - but everything it sends afterwards opens again.
+func (n *Peer) requestSenderKey(st *a2a.GroupState, senderFp, why string) {
+	gid := st.Roster.GroupID
+	card := st.Roster.Member(senderFp)
+	if card == nil || !n.keyReqDue("ask|"+gid+"|"+senderFp, groupKeyReqEvery) {
+		return
+	}
+	n.logf("group %s: cannot open messages from %s (%s) - asking for its sender key", a2a.ShortFp(gid), a2a.ShortFp(senderFp), why)
+	msg := &a2a.Message{ID: n.newMsgID(), From: n.Fingerprint(), To: senderFp, TS: time.Now(), Type: a2a.TypeGroupKeyReq, GID: gid}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := n.sendGroupPairwise(ctx, card, msg); err != nil {
+			n.logf("group %s: sender-key request to %s failed: %v", a2a.ShortFp(gid), a2a.ShortFp(senderFp), err)
+		}
+	}()
+}
+
+// handleGroupKeyReq (pairwise): a co-member cannot open my group messages. Forget that it
+// was served and distribute my current chain again. Only current roster members are
+// answered - they are entitled to the chain anyway - and each at most once per
+// groupKeyAnswerEvery. Never an error: a request I do not honour is simply dropped.
+func (n *Peer) handleGroupKeyReq(msg *a2a.Message) error {
+	gid := msg.GID
+	if !a2a.ValidGroupID(gid) {
+		return permanent(fmt.Errorf("malformed group_key_req"))
+	}
+	st := n.Groups.Get(gid)
+	if st == nil || n.GroupLeft(gid) || msg.From == n.Fingerprint() || st.Roster.Member(msg.From) == nil {
+		return nil
+	}
+	if !n.keyReqDue("answer|"+gid+"|"+msg.From, groupKeyAnswerEvery) {
+		return nil
+	}
+	n.gkMu.Lock()
+	keys := n.Groups.Keys(gid)
+	if keys.Mine == nil {
+		n.gkMu.Unlock()
+		return nil // never sent here: the first send distributes
+	}
+	delete(keys.DistributedTo, msg.From)
+	err := n.Groups.PutKeys(gid, keys)
+	n.gkMu.Unlock()
+	if err != nil {
+		return err // transient: disk hiccup, the request is retried
+	}
+	n.logf("group %s: %s asked for my sender key again (epoch %d) - redistributing", a2a.ShortFp(gid), a2a.ShortFp(msg.From), keys.Mine.Epoch)
+	n.distributeSenderKey(context.Background(), st)
+	return nil
+}
+
 // HandleGroupEnvelope processes one group fan-out envelope (Envelope.GID set) for hosts
 // that run their own receive loop instead of Run: signature + membership check, decrypt
 // with the sender's chain, dedupe, archive, emit. Classify a non-nil error with
@@ -2117,6 +2204,8 @@ func (n *Peer) HandleGroupMessage(msg *a2a.Message) (handled bool, err error) {
 		return true, n.handleGroupInvite(msg)
 	case a2a.TypeGroupKey:
 		return true, n.handleGroupKey(msg)
+	case a2a.TypeGroupKeyReq:
+		return true, n.handleGroupKeyReq(msg)
 	case a2a.TypeGroupLeave:
 		return true, n.handleGroupLeave(msg)
 	case a2a.TypeGroupUpdate:
