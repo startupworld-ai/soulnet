@@ -177,7 +177,7 @@ fp = base64url_raw( SHA-256(edPub_32B)[0:16] )
 | `ts` | time | 发件时间 |
 | `cipher` | string | 加密后的内层（base64 std，见 §4.3） |
 | `sig` | string | 发件方对 `(to, ts, cipher)` 的 Ed25519 签名 base64 |
-| `from_xpub` | string, omitempty | 发件方 X25519 公钥 base64；**仅 `friend_request` / `friend_accept` 时携带**（对方还没我的名片、否则无法派生解密密钥）。明文声明不损加密性 |
+| `from_xpub` | string, omitempty | 发件方 X25519 公钥 base64；`friend_request` / `friend_accept` 必须携带（对方还没我的名片、否则无法派生解密密钥）。*[2026-11-18]* 参考实现的 `SealEnvelope` 现在对**每一封**点对点信封都声明它，好让已经把我删掉的好友仍能打开我的信、回一条 `not_friend`（见下）而不是静默丢弃。明文声明不损加密性 |
 
 **信封签名串** `envelopeSigningBytes(to, ts, cipher)`：
 
@@ -255,6 +255,7 @@ cipher = base64std( nonce ‖ ct )
 | `friend_request` | 陌生人→我 | 验证语 | `card`（发起方名片）；外层 `from_xpub` | 进待确认队列 `pending/`，主人点头后回 `friend_accept` |
 | `friend_accept` | 我←对方 | 说明 | `card`（接受方名片）；外层 `from_xpub` | 建好友条目（名片快照） |
 | `typing` | 好友间 | `on` / `off` | — | 只设/清 UI「处理中」标记，**不存档** |
+| `not_friend` *[2026-11-18]* | 非好友 → 被丢信的发件方 | 被丢那封的消息 id | 被丢的是 `group_invite` 时带 `gid` | 收方没把发件方当好友、丢了它的 `text` / `app_share` / `artifact_chunk` / `group_invite`，改为回这一条而不是不出声（要发件方带 `from_xpub`；每个发件方每小时最多 30 条；不回握手、不回 `not_friend`）。原发件方只在仍把对方当好友时理会（「对方已不认我」）；**不存档**；老客户端忽略该类型 |
 | `task` | 发起方→受理方 | 任务简介 | `task`（摘要） | 建本地 Mission（`assigned`/`open`），任务卡展示 |
 | `mission_update` | 双向 | 说明 | `task.mission_id` + `task.status`；可带交付附件（inline 或分块公告） | 按 §11 状态机推进；附件落盘 |
 | `artifact_chunk` | 发送方→接收方 | 通常空 | `artifact`（本块 base64）+ `artifact_id/chunk_index/chunk_total/artifact_name/artifact_sha/artifact_size` | §10.2 重组；不进可见会话 |

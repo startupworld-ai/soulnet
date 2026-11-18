@@ -39,6 +39,7 @@ const (
 	TypeAppShare      = "app_share"      // app-share notice (Share carries action/app/tunnel_url; mechanical, does not wake the alter)
 	TypeGroupVoices   = "group_voices"   // seat roster metadata: the sender's enabled seat-agent names in this group (not archived; Voices field)
 	TypeRecall        = "recall"         // the sender withdraws one of its own earlier text messages (Recall = that message's id; GID set in a group). Not archived; older clients ignore the type
+	TypeNotFriend     = "not_friend"     // bounce: "you are not my friend, I dropped your mail" (Body = the dropped message id; GID set when it was a group invite). Not archived; older clients ignore the type
 )
 
 // App-share actions (Share.Action of TypeAppShare messages).
@@ -160,10 +161,11 @@ type Envelope struct {
 	TS     time.Time `json:"ts"`
 	Cipher string    `json:"cipher"` // encrypted inner envelope (base64)
 	Sig    string    `json:"sig"`    // sender's signature over to+ts+cipher (base64)
-	// FromXPub is used only for friend_request/accept and pairwise group_* messages: the peer may
-	// not hold a card of ours and could not otherwise obtain our X25519 public key to decrypt, so
-	// the envelope declares it (plaintext; only used to derive the decryption key, no loss of
-	// confidentiality).
+	// FromXPub declares the sender's X25519 public key on every pairwise envelope: the peer may
+	// not hold a card of ours (a stranger's friend_request, a group co-member, or a friend who
+	// has since dropped us) and could not otherwise decrypt -- in the last case it opens the
+	// mail only to bounce a not_friend back. Plaintext; only used to derive the decryption key,
+	// no loss of confidentiality.
 	FromXPub string `json:"from_xpub,omitempty"`
 	// GID marks a GROUP envelope (§14): Cipher is sender-key encrypted (not ECDH), the signature
 	// covers gid+ts+cipher (see VerifyGroupEnvelope), and To is stamped by the relay per fan-out

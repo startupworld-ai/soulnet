@@ -20,6 +20,7 @@ const (
 	EventGroupUpdated     = "group.updated"     // joined / roster changed / pins changed / left one group (GID)
 	EventGroupApplication = "group.application" // a stranger applied to join a group I own (GID, Peer = applicant, Message = the group_join)
 	EventMessageRecalled  = "message.recalled"  // a friend / group member withdrew one of its messages: Recalled = its id, Seq = its line (now wiped, Recalled set); GID set in a group
+	EventNotFriend        = "friend.not_mutual" // a friend bounced my mail: it no longer holds me as a friend and dropped it (Message.Body = the dropped message id; GID set when it was a group invite)
 	EventKicked           = "device.kicked"     // the relay refused this device: another device of this identity is active (Kicked); the receive loop has stopped
 )
 

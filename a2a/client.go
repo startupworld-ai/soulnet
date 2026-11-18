@@ -311,9 +311,9 @@ func SealEnvelope(id *Identity, toCard *Card, msg *Message) (*Envelope, error) {
 	}
 	ts := time.Now()
 	env := &Envelope{V: 2, To: toFp, From: id.EdPub, TS: ts, Cipher: cipherB64}
-	if IsHandshake(msg.Type) {
-		env.FromXPub = id.XPub
-	}
+	// Always declared (not only on handshakes): a friend who has dropped us can still open
+	// the mail and bounce a not_friend instead of discarding it silently.
+	env.FromXPub = id.XPub
 	env.Sig = EncodeKey(ed25519.Sign(edPriv, envelopeSigningBytes(env.To, env.TS, env.Cipher)))
 	return env, nil
 }

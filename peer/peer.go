@@ -126,6 +126,9 @@ type Peer struct {
 	rbSeen map[string]int // transient-retry budget (poison-mail guard, see retryBudget)
 	kqMu   sync.Mutex
 	kqSeen map[string]time.Time // group_key_req pacing, both directions (see keyReqDue)
+	nfMu   sync.Mutex
+	nfCard map[string]*a2a.Card   // strangers' keys seen on envelopes (bounce target, see notfriend.go)
+	nfSent map[string][]time.Time // not_friend bounces sent per stranger in the last hour
 
 	// gkMu serializes every load→mutate→store of a group's keys.json: the receive loop
 	// and API calls race on it, and a stale write must never resurrect an already-used

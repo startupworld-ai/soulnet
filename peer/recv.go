@@ -237,6 +237,8 @@ func (n *Peer) OpenEnvelope(env *a2a.Envelope) (*a2a.Message, error) {
 		theirXB64 = fr.Card.XPub
 	} else if env.FromXPub != "" {
 		theirXB64 = env.FromXPub // first contact from a stranger (friend request) declares its encryption key in the envelope
+		// Keep the key so mail from a non-friend can be bounced instead of dropped silently (notfriend.go).
+		n.rememberStranger(env.From, env.FromXPub)
 	} else if c := n.Groups.FindMemberCard(fingerprintOfB64(env.From)); c != nil {
 		theirXB64 = c.XPub // a group co-member who is not a friend (their card is on the roster)
 	} else {
@@ -302,6 +304,8 @@ func (n *Peer) dispatch(msg *a2a.Message) error {
 		return n.handleArtifactChunk(msg)
 	case a2a.TypeRecall:
 		return n.handleRecall(msg)
+	case a2a.TypeNotFriend:
+		return n.handleNotFriend(msg)
 	default:
 		if handled, err := n.HandleGroupMessage(msg); handled {
 			return err
@@ -359,6 +363,7 @@ func (n *Peer) archiveIncoming(msg *a2a.Message, kind string) error {
 	peer := msg.From
 	if !n.Friends.IsFriend(peer) {
 		n.logf("dropping %s from non-friend %s", msg.Type, a2a.ShortFp(peer))
+		n.bounceNotFriend(msg)
 		return nil
 	}
 	if msg.ID == "" {
@@ -401,6 +406,7 @@ func (n *Peer) handleArtifactChunk(msg *a2a.Message) error {
 	peer := msg.From
 	if !n.Friends.IsFriend(peer) {
 		n.logf("dropping chunk from non-friend %s", a2a.ShortFp(peer))
+		n.bounceNotFriend(msg)
 		return nil
 	}
 	if msg.ID == "" {

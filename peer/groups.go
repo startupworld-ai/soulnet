@@ -2020,6 +2020,7 @@ func (n *Peer) handleGroupInvite(msg *a2a.Message) error {
 		owner, applied := n.appliedOwner(roster.GroupID)
 		if !applied || (owner != "" && owner != msg.From) {
 			n.logf("dropping group invite from %s: neither a friend nor the owner I applied to", a2a.ShortFp(msg.From))
+			n.bounceNotFriend(msg)
 			return nil
 		}
 	}

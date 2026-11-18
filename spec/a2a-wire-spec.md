@@ -181,7 +181,7 @@ Sending = `Message` → JSON → `Seal` (encrypt) → put into `Envelope.cipher`
 | `ts` | time | send time |
 | `cipher` | string | the encrypted inner layer (base64 std, §4.3) |
 | `sig` | string | sender's Ed25519 signature over `(to, ts, cipher)`, base64 |
-| `from_xpub` | string, omitempty | sender's X25519 public key, base64; **carried only on `friend_request` / `friend_accept`** (the peer does not have my card yet and could not derive the decryption key otherwise). Declaring it in the clear does not weaken the encryption |
+| `from_xpub` | string, omitempty | sender's X25519 public key, base64; required on `friend_request` / `friend_accept` (the peer does not have my card yet and could not derive the decryption key otherwise). *[2026-11-18]* The reference `SealEnvelope` now declares it on **every** pairwise envelope, so a friend who has since dropped me can still open my mail and answer `not_friend` (below) instead of discarding it silently. Declaring it in the clear does not weaken the encryption |
 
 **Envelope signing string** `envelopeSigningBytes(to, ts, cipher)`:
 
@@ -259,6 +259,7 @@ Order the two fingerprints by **Go string comparison (byte order)**, smaller fir
 | `friend_request` | stranger → me | verification note | `card` (requester's card); outer `from_xpub` | goes into the pending queue `pending/`; once the owner approves, reply with `friend_accept` |
 | `friend_accept` | me ← peer | note | `card` (acceptor's card); outer `from_xpub` | create the friend entry (card snapshot) |
 | `typing` | between friends | `on` / `off` | — | only sets/clears the UI "working" flag, **not archived** |
+| `not_friend` *[2026-11-18]* | non-friend → sender of dropped mail | id of the dropped message | `gid` when the dropped mail was a `group_invite` | the receiver does not hold the sender as a friend and dropped its `text` / `app_share` / `artifact_chunk` / `group_invite`; it answers this instead of staying silent (needs the sender's `from_xpub`; at most 30 per sender per hour; never in answer to a handshake or to `not_friend`). The original sender acts on it only if it still holds the bouncer as a friend ("they no longer hold me as a friend"); **not archived**; older clients ignore the type |
 | `task` | initiator → assignee | task brief | `task` (summary) | create the local Mission (`assigned`/`open`), show the task card |
 | `mission_update` | both ways | note | `task.mission_id` + `task.status`; may carry a delivery attachment (inline or a chunk announcement) | advance per the §11 state machine; write the attachment to disk |
 | `artifact_chunk` | sender → receiver | usually empty | `artifact` (this chunk, base64) + `artifact_id/chunk_index/chunk_total/artifact_name/artifact_sha/artifact_size` | reassemble per §10.2; not shown in the visible conversation |

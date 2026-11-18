@@ -108,8 +108,10 @@ func TestSealEnvelopeHandshakeFromXPub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env.FromXPub != "" {
-		t.Fatalf("non-handshake envelope must not carry from_xpub, got %q", env.FromXPub)
+	// Every pairwise envelope declares it now, so a friend who dropped us can still open the
+	// mail and bounce a not_friend (peer/notfriend.go).
+	if env.FromXPub != a.XPub {
+		t.Fatalf("text envelope must carry from_xpub too, got %q", env.FromXPub)
 	}
 	if !IsHandshake(TypeFriendRequest) || !IsHandshake(TypeFriendAccept) || IsHandshake(TypeText) || IsHandshake(TypeTask) {
 		t.Fatal("IsHandshake wrong")
